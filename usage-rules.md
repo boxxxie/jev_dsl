@@ -33,13 +33,22 @@ defmodule MyApp.TriageContracts do
     false -> "Routine bug report or feature request."
   end
 
-  # Mutually exclusive classification (preserves stab-clause declaration order)
+  # Mutually exclusive classification (supports bare identifiers, :atoms, or "string" keys)
   defchoice :sentiment,
     as: :tone,
     ask: "Classify the overall tone of the message." do
     positive -> "Constructive, appreciative, or favorable tone."
-    neutral -> "Factual or informational without strong emotion."
-    negative -> "Critical, frustrated, or dissatisfied tone."
+    :neutral -> "Factual or informational without strong emotion."
+    "negative" -> "Critical, frustrated, or dissatisfied tone."
+  end
+
+  # String contract names and string stab keys (including uppercase or spaces)
+  defchoice "csv_column_mapping",
+    as: "mapped_field",
+    ask: "Map the CSV column header to a schema field." do
+    "given_name" -> "First name of the user."
+    "Needs Review" -> "Ambiguous column requiring manual check."
+    "UNMAPPED" -> "Does not map to a known field."
   end
 
   # Ordered rubric grading scale (2..10 levels)

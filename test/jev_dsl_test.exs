@@ -62,8 +62,16 @@ defmodule JevDSLTest do
       as: :tone,
       ask: "Classify the overall tone of the message." do
       positive -> "Constructive, appreciative, or favorable tone."
-      neutral -> "Factual or informational without strong emotion."
+      :neutral -> "Factual or informational without strong emotion."
       "negative" -> "Critical, frustrated, or dissatisfied tone."
+    end
+
+    defchoice "csv_column_mapping",
+      as: "mapped_field",
+      ask: "Map the CSV column header." do
+      "given_name" -> "First name of the user."
+      "Needs Review" -> "Ambiguous column."
+      UNMAPPED -> "Does not map to a known field."
     end
 
     defscore :completeness,
@@ -119,12 +127,13 @@ defmodule JevDSLTest do
   describe "JevDSL compile-time contract compilation & atom/string interoperability" do
     test "compiles defnoul, defchoice, defscore, defjev, and defalias into typed %JevDSL.Contract{} structs" do
       contracts = SampleContracts.__contracts__()
-      assert map_size(contracts) == 7
+      assert map_size(contracts) == 8
 
       for key <- [
             :is_spam,
             :is_urgent_noul,
             :sentiment,
+            :csv_column_mapping,
             :completeness,
             :ticket_triage,
             :legacy_triage,
@@ -157,6 +166,10 @@ defmodule JevDSLTest do
       prep = SampleContracts.prepared(:sentiment)
       tone_def = prep.definitions["tone"]
       assert tone_def.option_order == ["positive", "neutral", "negative"]
+
+      csv_prep = SampleContracts.prepared("csv_column_mapping")
+      csv_def = csv_prep.definitions["mapped_field"]
+      assert csv_def.option_order == ["given_name", "Needs Review", "UNMAPPED"]
     end
 
     test "exports noul, choice, and score contracts to CUE schema via __export_cue__/0" do

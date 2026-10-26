@@ -551,6 +551,11 @@ defmodule JevDSL do
   defp parse_clause_block(block, explicit_inst, caller) when is_list(block) do
     pairs =
       Enum.map(block, fn
+        {:->, _, [[{:__aliases__, _, parts}], desc]}
+        when is_list(parts) and is_binary(desc) ->
+          key_str = Enum.map_join(parts, ".", &Atom.to_string/1)
+          {normalize_key_atom!(key_str, caller), String.trim(desc)}
+
         {:->, _, [[{key_atom, _, ctx}], desc]}
         when is_atom(key_atom) and is_atom(ctx) and is_binary(desc) ->
           {key_atom, String.trim(desc)}

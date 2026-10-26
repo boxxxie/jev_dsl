@@ -73,13 +73,23 @@ defmodule MyApp.TriageContracts do
     false -> "Routine bug report or feature request."
   end
 
-  # 2. Single Choice (mutually exclusive options; preserves stab-clause order)
+  # 2. Single Choice (supports bare identifiers, :atoms, or "string" option keys)
   defchoice :sentiment,
     as: :tone,
     ask: "Classify the overall tone of the message." do
     positive -> "Constructive, appreciative, or favorable tone."
-    neutral -> "Factual or informational without strong emotion."
-    negative -> "Critical, frustrated, or dissatisfied tone."
+    :neutral -> "Factual or informational without strong emotion."
+    "negative" -> "Critical, frustrated, or dissatisfied tone."
+  end
+
+  # 2b. String keys for contract names, question names, and arbitrary string options
+  defchoice "csv_column_mapping",
+    as: "mapped_field",
+    ask: "Map the CSV column header to a canonical user schema field." do
+    "given_name" -> "First or given name of the user."
+    "family_name" -> "Last name or surname of the user."
+    "Needs Review" -> "Ambiguous header that requires human review."
+    "UNMAPPED" -> "Does not correspond to any known schema field."
   end
 
   # 3. Single Score (ordered rubric scale 2..10 levels)
