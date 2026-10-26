@@ -7,13 +7,17 @@ defmodule JevDSL.Question do
   @enforce_keys [:name, :type, :instructions, :criteria]
   defstruct [:name, :type, :instructions, :criteria]
 
+  @type question_key :: atom() | String.t()
   @type question_type :: :noul | :choice | :score
-  @type criteria_type :: %{optional(atom()) => String.t()} | [{atom(), String.t()}]
+  @type criteria_key :: atom() | String.t() | boolean()
+  @type criteria_type ::
+          %{optional(criteria_key()) => term()}
+          | [{criteria_key(), term()}]
 
   @type t :: %__MODULE__{
-          name: atom(),
+          name: question_key(),
           type: question_type(),
-          instructions: String.t(),
+          instructions: term(),
           criteria: criteria_type()
         }
 end
