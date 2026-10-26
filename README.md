@@ -3,23 +3,24 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/jev_dsl.svg)](https://hex.pm/packages/jev_dsl)
 [![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/jev_dsl)
 
-**Compile-time contract DSL, two-tier content-addressed caching layer, and execution runner for [TypeSafe Jev (`SystemOneSDK`)](https://hex.pm/packages/system_one_sdk).**
+**Declarative Elixir DSL and two-tier caching layer for [TypeSafe Jev (`SystemOneSDK`)](https://hex.pm/packages/system_one_sdk).**
 
-`JevDSL` compiles semantic judgment contracts (`noul`, `choice`, `score`, and multi-question `defjev` bundles) into validated `%SystemOneSDK.Prepared{}` structs at compile time, caches their pre-encoded `Jason.Fragment` wire payloads in `:persistent_term`, and provides content-addressed SHA-256 L1/L2 caching so prompt or rubric edits automatically invalidate stale cache entries.
+Write semantic judgment contracts (`defnoul`, `defchoice`, `defscore`, `defjev`) as clean Elixir macros. `JevDSL` validates every contract at compile time, caches wire payloads in `:persistent_term`, and provides content-addressed L1/L2 caching out of the box.
 
 ---
 
 ## Features
 
-- **Compile-Time Validation**: Every `defnoul`, `defchoice`, `defscore`, `defjev`, and `defalias` block is validated at compile time via `SystemOneSDK.prepare/1`. Invalid criteria, duplicate contract names, or broken aliases raise a `CompileError` with exact file and line numbers before your app boots.
-- **Atom-Keyed Choice Clauses & Interoperability**: Choice stab-clause symbols (`positive -> "..."`) compile to atoms (`:positive`) so `response.answers.tone.choice` and `response.answers.tone.probabilities` always use atoms. Contract lookups (`evaluate/3`) and answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`) accept both atoms and strings.
-- **Zero Re-Serialization Overhead**: Prepared wire payloads (`Jason.Fragment`) are rehydrated once and cached in `:persistent_term` for $O(1)$ access across all BEAM processes.
-- **Content-Addressed SHA-256 Caching (`JevDSL.Cache`)**: Cache keys (`"jev_<sha256>"`) combine the recursively canonicalized input `state` (maps, structs, lists, tuples) and the compiled `SystemOneSDK.Prepared.fingerprint`. Editing a prompt or rubric immediately produces a new fingerprint and cache key—never serving stale judgments.
-- **Confidence-Gated TTLs**: High-confidence judgments (`>= 0.65`) are cached for the full TTL (default 7 days), ambiguous judgments (`< 0.65`) receive a short 5-minute TTL, and transient errors are never cached.
-- **Two-Tier (L1 + L2) Execution (`JevDSL.Runner`)**: Ships with a concurrent ETS L1 cache (`JevDSL.Cache.ETS`) supporting both caller supervision (`start_link/1` + periodic TTL pruning) and zero-config `:kernel_sup` heir protection, plus pluggable L1/L2 adapters (`get_many/2` / `put_many/2`) with automatic L2 $\to$ L1 warming, L1 $\to$ L2 backfill, and offline replay (`cache_only: true`).
-- **First-Class Testing (`SystemOneSDK.Test` & `:eval_fn`)**: Works seamlessly with `SystemOneSDK.Test.client()` transport stubs, 1-arity `:eval_fn` mocks, or `cache_only: true` offline fixtures.
-- **Igniter Installer (`Mix.Tasks.JevDsl.Install`)**: Run `mix igniter.install jev_dsl` to automatically configure `.formatter.exs` and optionally scaffold a contract module.
-- **CUE Schema Export (`JevDSL.CUE`)**: Export all contracts in a module to a deterministic CUE schema via `__export_cue__/0`.
+| Feature | Highlights |
+| :--- | :--- |
+| **Compile-Time DSL** | Define `defnoul`, `defchoice`, `defscore`, `defjev`, and `defalias` blocks validated at build time via `SystemOneSDK.prepare/1`. Invalid rubrics or broken aliases raise a `CompileError` with exact file and line numbers. |
+| **Predictable Atom Keys** | Choice clauses (`positive -> "..."`) compile to atoms (`:positive`) in declaration order for clean pattern matching. Contract lookups and helpers (`fetch_answer/2`, `choice?/2`, `probability/2`) accept both atoms and strings. |
+| **Zero-Copy Wire Payloads** | Pre-encoded `Jason.Fragment` payloads are rehydrated once and stored in `:persistent_term` for `O(1)` access across all BEAM processes. |
+| **Content-Addressed Cache** | SHA-256 cache keys (`"jev_<sha256>"`) combine the canonicalized input `state` with the contract's `Prepared.fingerprint`. Editing a prompt or rubric automatically invalidates stale entries. |
+| **Confidence-Gated TTLs** | High-confidence judgments (`>= 0.65`) cache for the full TTL (7 days), ambiguous judgments (`< 0.65`) cache for 5 minutes, and transient errors are never cached. |
+| **Two-Tier L1 + L2 Runner** | Built-in ETS L1 cache (`JevDSL.Cache.ETS`) plus pluggable L2 storage (`get_many/2` / `put_many/2`) with automatic L2 → L1 warming, L1 → L2 backfill, and `cache_only: true` offline replay. |
+| **First-Class Testing** | Test deterministically with `SystemOneSDK.Test.client()` transport stubs, 1-arity `:eval_fn` mocks, or offline cache fixtures. |
+| **Igniter & CUE Tooling** | Install in one command with `mix igniter.install jev_dsl` and export contracts to deterministic CUE schemas via `__export_cue__/0`. |
 
 ---
 
