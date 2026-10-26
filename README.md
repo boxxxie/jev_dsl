@@ -73,18 +73,19 @@ defmodule MyApp.TriageContracts do
     false -> "Routine bug report or feature request."
   end
 
-  # 2. Single Choice (supports bare identifiers, :atoms, or "string" option keys)
+  # 2. Single Choice (stab clauses compile to atoms by default: :positive, :neutral, :negative)
   defchoice :sentiment,
     as: :tone,
     ask: "Classify the overall tone of the message." do
     positive -> "Constructive, appreciative, or favorable tone."
-    :neutral -> "Factual or informational without strong emotion."
-    "negative" -> "Critical, frustrated, or dissatisfied tone."
+    neutral -> "Factual or informational without strong emotion."
+    negative -> "Critical, frustrated, or dissatisfied tone."
   end
 
-  # 2b. String keys for contract names, question names, and arbitrary string options
-  defchoice "csv_column_mapping",
-    as: "mapped_field",
+  # 2b. Explicit `keys: :strings` when you want string choice keys (or string keys with spaces)
+  defchoice :csv_column_mapping,
+    as: :mapped_field,
+    keys: :strings,
     ask: "Map the CSV column header to a canonical user schema field." do
     "given_name" -> "First or given name of the user."
     "family_name" -> "Last name or surname of the user."
@@ -131,22 +132,25 @@ end
 Every `use JevDSL` module automatically generates `evaluate/3`, `evaluate!/3`, `evaluate_many/3`, `available?/2`, `cache_key/2`, `contract/1`, `prepared/1`, `has_contract?/1`, `contract_fingerprint/1`, `__contracts__/0`, and `__export_cue__/0`:
 
 ```elixir
-# Single evaluation (accepts atom or string contract keys)
+# Single evaluation (choice answers return atoms by default: response.answers.tone.choice == :positive)
 {:ok, response} =
   MyApp.TriageContracts.evaluate(:sentiment, %{
     subject: "Thank you!",
     body: "The new release is super fast."
   })
 
-# Atom/string-safe answer helpers
+# Pattern match directly on atom keys:
+%{choice: :positive, probabilities: %{positive: prob}} = response.answers.tone
+
+# Or use atom/string-safe answer helpers:
 {:ok, tone} = JevDSL.fetch_answer(response, :tone)
 true = JevDSL.choice?(tone, :positive)
-{:ok, prob} = JevDSL.probability(tone, "positive")
+{:ok, ^prob} = JevDSL.probability(tone, :positive)
 
-# Or request atom keys directly on the response
-{:ok, atom_resp} =
-  MyApp.TriageContracts.evaluate("sentiment", %{body: "Great!"}, keys: :atoms)
-# atom_resp.answers.tone.choice => :positive
+# Or override at runtime with `keys: :strings` (or `keys: :atoms`)
+{:ok, str_resp} =
+  MyApp.TriageContracts.evaluate(:sentiment, %{body: "Great!"}, keys: :strings)
+# str_resp.answers.tone.choice => "positive"
 
 # Concurrent batch evaluation (resolves L1/L2 cache hits via get_many/2 first, dispatches only misses)
 results =

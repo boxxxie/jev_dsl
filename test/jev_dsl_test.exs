@@ -68,6 +68,7 @@ defmodule JevDSLTest do
 
     defchoice "csv_column_mapping",
       as: "mapped_field",
+      keys: :strings,
       ask: "Map the CSV column header." do
       "given_name" -> "First name of the user."
       "Needs Review" -> "Ambiguous column."
@@ -162,10 +163,10 @@ defmodule JevDSLTest do
       assert SampleContracts.contract_fingerprint(:nonexistent) == :error
     end
 
-    test "preserves stab-clause declaration order in defchoice" do
+    test "preserves stab-clause declaration order in defchoice and defaults to :atoms unless keys: :strings" do
       prep = SampleContracts.prepared(:sentiment)
       tone_def = prep.definitions["tone"]
-      assert tone_def.option_order == ["positive", "neutral", "negative"]
+      assert tone_def.option_order == [:positive, :neutral, :negative]
 
       csv_prep = SampleContracts.prepared("csv_column_mapping")
       csv_def = csv_prep.definitions["mapped_field"]
@@ -351,6 +352,8 @@ defmodule JevDSLTest do
           [client: client] ++ cache_opts
         )
 
+      assert resp.answers.tone.choice == :positive
+      assert resp.answers.tone.probabilities.positive == 0.91
       assert {:ok, tone_ans} = JevDSL.fetch_answer(resp, :tone)
       assert {:ok, ^tone_ans} = JevDSL.fetch_answer(resp, "tone")
       assert JevDSL.choice?(tone_ans, :positive)
@@ -358,16 +361,16 @@ defmodule JevDSLTest do
       assert {:ok, 0.91} = JevDSL.probability(tone_ans, :positive)
       assert {:ok, 0.91} = JevDSL.probability(tone_ans, "positive")
 
-      # Second call with `keys: :atoms` hits L1 cache and transforms keys to atoms without another HTTP call
-      {:ok, atom_resp} =
+      # Second call with `keys: :strings` hits L1 cache and transforms keys to strings without another HTTP call
+      {:ok, str_resp} =
         SampleContracts.evaluate(
           "sentiment",
           state,
-          [client: client, keys: :atoms] ++ cache_opts
+          [client: client, keys: :strings] ++ cache_opts
         )
 
-      assert atom_resp.answers.tone.choice == :positive
-      assert atom_resp.answers.tone.probabilities.positive == 0.91
+      assert str_resp.answers.tone.choice == "positive"
+      assert str_resp.answers.tone.probabilities["positive"] == 0.91
 
       SystemOneSDK.Test.verify!(client)
       assert length(SystemOneSDK.Test.requests(client)) == 1

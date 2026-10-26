@@ -11,7 +11,7 @@ All notable changes to `jev_dsl` are documented in this file.
   - `defscore/2..3` for ordered rubric grading scale contracts (`level -> "criteria"`) via `SystemOneSDK.Question.Score`.
   - `defjev/2` for multi-question contracts combining `noul`, `choice`, and `score` questions in a single request.
   - `defalias/2` for zero-cost compile-time contract aliasing with duplicate/collision detection.
-  - Full atom and string interoperability across contract names, question names, stab-clause keys, `keys: :strings | :atoms` response key transformation, and dual-key answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.fetch_answer!/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`).
+  - Atom-by-default stab-clause compilation (`keys: :atoms`, configurable via `keys: :atoms | :strings` on `defchoice`, `defscore`, `defjev`, `use JevDSL`, and `evaluate/3`), plus full atom/string interoperability across contract names, question names, and dual-key answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.fetch_answer!/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`).
   - Compile-time option validation via `NimbleOptions` and `SystemOneSDK.prepare/1` validation raising `CompileError` with caller file/line numbers, plus `:persistent_term` `Jason.Fragment` wire payload rehydration.
 - **`JevDSL.Cache` & `JevDSL.Cache.ETS`**:
   - Pluggable `@behaviour JevDSL.Cache` (`get/2`, `put/3`, optional `get_many/2`, `put_many/2`) with `adapter_get_many/3` and `adapter_put_many/3`.

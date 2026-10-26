@@ -126,7 +126,8 @@ defmodule JevDSL.Runner do
           eval_fn.(eval_state)
 
         can_run_or_tier2?(merged) ->
-          dispatch_single(contract_mod, contract_key, state, merged)
+          result = dispatch_single(contract_mod, contract_key, state, merged)
+          maybe_transform_keys(result, opts)
 
         true ->
           {:error, :no_api_key}
@@ -160,7 +161,10 @@ defmodule JevDSL.Runner do
   defp do_evaluate_many(contract_mod, contract_key, states, opts) do
     if valid_contract?(contract_mod, contract_key) do
       merged = merge_module_opts(contract_mod, opts)
-      run_evaluate_many(contract_mod, contract_key, states, merged)
+
+      contract_mod
+      |> run_evaluate_many(contract_key, states, merged)
+      |> Enum.map(&maybe_transform_keys(&1, opts))
     else
       Enum.map(states, fn _ -> {:error, {:unknown_contract, contract_key}} end)
     end
@@ -292,14 +296,11 @@ defmodule JevDSL.Runner do
     prep = contract_mod.prepared(contract_key)
     client = build_optional_client(opts)
 
-    result =
-      if Keyword.get(opts, :cache?, true) do
-        evaluate_single_cached(contract_key, client, state, prep, opts)
-      else
-        evaluate_single_uncached(client, state, prep, opts)
-      end
-
-    maybe_transform_keys(result, opts)
+    if Keyword.get(opts, :cache?, true) do
+      evaluate_single_cached(contract_key, client, state, prep, opts)
+    else
+      evaluate_single_uncached(client, state, prep, opts)
+    end
   end
 
   defp evaluate_single_uncached(nil, _state, _prep, opts), do: missing_client_error(opts)
@@ -390,20 +391,17 @@ defmodule JevDSL.Runner do
     prep = contract_mod.prepared(contract_key)
     client = build_optional_client(opts)
 
-    results =
-      cond do
-        Keyword.get(opts, :cache?, true) ->
-          evaluate_many_cached(contract_key, client, states, prep, opts)
+    cond do
+      Keyword.get(opts, :cache?, true) ->
+        evaluate_many_cached(contract_key, client, states, prep, opts)
 
-        not is_nil(client) ->
-          SystemOneSDK.evaluate_many(client, states, prep, build_batch_sdk_opts(opts))
+      not is_nil(client) ->
+        SystemOneSDK.evaluate_many(client, states, prep, build_batch_sdk_opts(opts))
 
-        true ->
-          err = missing_client_error(opts)
-          Enum.map(states, fn _ -> err end)
-      end
-
-    Enum.map(results, &maybe_transform_keys(&1, opts))
+      true ->
+        err = missing_client_error(opts)
+        Enum.map(states, fn _ -> err end)
+    end
   end
 
   defp build_batch_sdk_opts(opts) do
