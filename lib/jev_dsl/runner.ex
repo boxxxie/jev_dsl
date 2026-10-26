@@ -126,8 +126,7 @@ defmodule JevDSL.Runner do
           eval_fn.(eval_state)
 
         can_run_or_tier2?(merged) ->
-          result = dispatch_single(contract_mod, contract_key, state, merged)
-          maybe_transform_keys(result, opts)
+          dispatch_single(contract_mod, contract_key, state, merged)
 
         true ->
           {:error, :no_api_key}
@@ -161,10 +160,7 @@ defmodule JevDSL.Runner do
   defp do_evaluate_many(contract_mod, contract_key, states, opts) do
     if valid_contract?(contract_mod, contract_key) do
       merged = merge_module_opts(contract_mod, opts)
-
-      contract_mod
-      |> run_evaluate_many(contract_key, states, merged)
-      |> Enum.map(&maybe_transform_keys(&1, opts))
+      run_evaluate_many(contract_mod, contract_key, states, merged)
     else
       Enum.map(states, fn _ -> {:error, {:unknown_contract, contract_key}} end)
     end
@@ -543,53 +539,5 @@ defmodule JevDSL.Runner do
     end
 
     updated_map
-  end
-
-  defp maybe_transform_keys({:ok, %SystemOneSDK.SystemOneResponse{} = resp} = ok_tuple, opts) do
-    case Keyword.get(opts, :keys) do
-      :atoms -> {:ok, transform_response_keys(resp, :atoms)}
-      :strings -> {:ok, transform_response_keys(resp, :strings)}
-      _ -> ok_tuple
-    end
-  end
-
-  defp maybe_transform_keys(other, _opts), do: other
-
-  defp transform_response_keys(%SystemOneSDK.SystemOneResponse{answers: answers} = resp, mode) do
-    updated_answers =
-      Map.new(answers, fn {k, ans} ->
-        {k, transform_answer_keys(ans, mode)}
-      end)
-
-    %{resp | answers: updated_answers}
-  end
-
-  defp transform_answer_keys(%SystemOneSDK.ChoiceAnswer{} = ans, mode) do
-    %{
-      ans
-      | choice: convert_key(ans.choice, mode),
-        probabilities: Map.new(ans.probabilities, fn {k, v} -> {convert_key(k, mode), v} end),
-        option_order: Enum.map(ans.option_order, &convert_key(&1, mode))
-    }
-  end
-
-  defp transform_answer_keys(%SystemOneSDK.ScoreAnswer{} = ans, mode) do
-    %{
-      ans
-      | label: if(ans.label, do: convert_key(ans.label, mode), else: nil),
-        levels: Enum.map(ans.levels, fn {lbl, p} -> {convert_key(lbl, mode), p} end)
-    }
-  end
-
-  defp transform_answer_keys(other, _mode), do: other
-
-  defp convert_key(key, :strings) when is_atom(key), do: Atom.to_string(key)
-  defp convert_key(key, :strings) when is_binary(key), do: key
-  defp convert_key(key, :atoms) when is_atom(key), do: key
-
-  defp convert_key(key, :atoms) when is_binary(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
   end
 end

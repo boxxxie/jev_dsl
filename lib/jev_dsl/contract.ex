@@ -5,11 +5,10 @@ defmodule JevDSL.Question do
   """
 
   @enforce_keys [:name, :type, :instructions, :criteria]
-  defstruct [:name, :type, :instructions, :criteria, :keys]
+  defstruct [:name, :type, :instructions, :criteria]
 
   @type question_key :: atom() | String.t()
   @type question_type :: :noul | :choice | :score
-  @type keys_mode :: :atoms | :strings | nil
   @type criteria_key :: atom() | String.t() | boolean()
   @type criteria_type ::
           %{optional(criteria_key()) => term()}
@@ -19,8 +18,7 @@ defmodule JevDSL.Question do
           name: question_key(),
           type: question_type(),
           instructions: term(),
-          criteria: criteria_type(),
-          keys: keys_mode()
+          criteria: criteria_type()
         }
 end
 

@@ -6,7 +6,7 @@ Rules for LLMs and developers working with `jev_dsl` — the compile-time contra
 ## Core Principles
 
 - **Define all contracts at compile time (`use JevDSL`):** Never construct ad-hoc question maps at runtime or load `.json` prompt files when a contract can be declared with `defnoul`, `defchoice`, `defscore`, or `defjev`. Compile-time contracts validate question definitions via `SystemOneSDK.prepare/1` during compilation and cache `Jason.Fragment` wire payloads in `:persistent_term`.
-- **Stab-clause keys are `:atoms` by default (`keys: :atoms | :strings`):** In `defchoice` and `choice`, `positive -> "..."` compiles to the `:positive` atom by default so `response.answers.tone.choice == :positive` and `response.answers.tone.probabilities.positive` work with standard Elixir pattern matching. Pass `keys: :strings` on `defchoice`, `choice`, `defjev`, `use JevDSL`, or `evaluate/3` when you explicitly want string keys (`"positive"`). Contract names, question names, and answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`) accept both atoms and strings interchangeably.
+- **Choice stab-clause symbols compile to atoms:** In `defchoice` and `choice`, `positive -> "..."` compiles to the `:positive` atom so `response.answers.tone.choice == :positive` and `response.answers.tone.probabilities.positive` work directly with standard Elixir pattern matching. Contract names, question names, and answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`) accept both atoms and strings.
 - **Never hash `state` without the contract fingerprint:** Always compute cache keys via `MyContracts.cache_key(contract_key, state)` or `JevDSL.Cache.key(state, prepared)`. Editing a prompt or rubric criterion changes `prepared.fingerprint` at compile time and automatically invalidates stale cached judgments.
 - **Always use `evaluate_many/3` for batches:** Never wrap single `evaluate/3` calls in `Task.async_stream/3` (which bottlenecks on `:httpc` connection serialization). `MyContracts.evaluate_many/3` resolves L1/L2 cache hits in bulk (`get_many/2`) and fans out only uncached misses via `SystemOneSDK.evaluate_many/4`.
 
@@ -33,24 +33,13 @@ defmodule MyApp.TriageContracts do
     false -> "Routine bug report or feature request."
   end
 
-  # Mutually exclusive classification (stab clauses compile to atoms by default: :positive, :neutral, :negative)
+  # Mutually exclusive classification (stab clauses compile to atoms: :positive, :neutral, :negative)
   defchoice :sentiment,
     as: :tone,
-    keys: :atoms, # default (:atoms | :strings)
     ask: "Classify the overall tone of the message." do
     positive -> "Constructive, appreciative, or favorable tone."
     neutral -> "Factual or informational without strong emotion."
     negative -> "Critical, frustrated, or dissatisfied tone."
-  end
-
-  # Explicit `keys: :strings` when string choice keys are desired
-  defchoice :csv_column_mapping,
-    as: :mapped_field,
-    keys: :strings,
-    ask: "Map the CSV column header to a schema field." do
-    "given_name" -> "First name of the user."
-    "Needs Review" -> "Ambiguous column requiring manual check."
-    "UNMAPPED" -> "Does not map to a known field."
   end
 
   # Ordered rubric grading scale (2..10 levels)
@@ -87,7 +76,7 @@ end
 ### 2. Evaluating & Reading Answers
 
 ```elixir
-# ✅ DO: Pattern match directly on atom keys (default `keys: :atoms`) or use helpers
+# ✅ DO: Pattern match directly on atom keys or use helpers
 {:ok, response} = MyApp.TriageContracts.evaluate(:sentiment, %{text: "Great work!"})
 %{choice: :positive, probabilities: %{positive: p}} = response.answers.tone
 
@@ -96,10 +85,6 @@ end
 if JevDSL.choice?(tone, :positive) do
   {:ok, ^p} = JevDSL.probability(tone, :positive)
 end
-
-# ✅ DO: Pass `keys: :strings` (on `defchoice` or `evaluate/3`) when you want string choice keys
-{:ok, str_resp} = MyApp.TriageContracts.evaluate(:sentiment, %{text: "Great work!"}, keys: :strings)
-# str_resp.answers.tone.choice => "positive"
 
 # ✅ DO: Use evaluate_many/3 for concurrent batch evaluation
 results = MyApp.TriageContracts.evaluate_many(:is_spam, [%{text: "a"}, %{text: "b"}])

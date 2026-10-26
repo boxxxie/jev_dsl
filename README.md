@@ -12,7 +12,7 @@
 ## Features
 
 - **Compile-Time Validation**: Every `defnoul`, `defchoice`, `defscore`, `defjev`, and `defalias` block is validated at compile time via `SystemOneSDK.prepare/1`. Invalid criteria, duplicate contract names, or broken aliases raise a `CompileError` with exact file and line numbers before your app boots.
-- **Atom & String Interoperability**: Contract keys, question keys, stab-clause keys, `evaluate/3` lookups, and answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`) accept atoms and strings interchangeably, plus `keys: :strings | :atoms` response key transformation.
+- **Atom-Keyed Choice Clauses & Interoperability**: Choice stab-clause symbols (`positive -> "..."`) compile to atoms (`:positive`) so `response.answers.tone.choice` and `response.answers.tone.probabilities` always use atoms. Contract lookups (`evaluate/3`) and answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`) accept both atoms and strings.
 - **Zero Re-Serialization Overhead**: Prepared wire payloads (`Jason.Fragment`) are rehydrated once and cached in `:persistent_term` for $O(1)$ access across all BEAM processes.
 - **Content-Addressed SHA-256 Caching (`JevDSL.Cache`)**: Cache keys (`"jev_<sha256>"`) combine the recursively canonicalized input `state` (maps, structs, lists, tuples) and the compiled `SystemOneSDK.Prepared.fingerprint`. Editing a prompt or rubric immediately produces a new fingerprint and cache key—never serving stale judgments.
 - **Confidence-Gated TTLs**: High-confidence judgments (`>= 0.65`) are cached for the full TTL (default 7 days), ambiguous judgments (`< 0.65`) receive a short 5-minute TTL, and transient errors are never cached.
@@ -73,24 +73,13 @@ defmodule MyApp.TriageContracts do
     false -> "Routine bug report or feature request."
   end
 
-  # 2. Single Choice (stab clauses compile to atoms by default: :positive, :neutral, :negative)
+  # 2. Single Choice (stab clauses compile to atoms: :positive, :neutral, :negative)
   defchoice :sentiment,
     as: :tone,
     ask: "Classify the overall tone of the message." do
     positive -> "Constructive, appreciative, or favorable tone."
     neutral -> "Factual or informational without strong emotion."
     negative -> "Critical, frustrated, or dissatisfied tone."
-  end
-
-  # 2b. Explicit `keys: :strings` when you want string choice keys (or string keys with spaces)
-  defchoice :csv_column_mapping,
-    as: :mapped_field,
-    keys: :strings,
-    ask: "Map the CSV column header to a canonical user schema field." do
-    "given_name" -> "First or given name of the user."
-    "family_name" -> "Last name or surname of the user."
-    "Needs Review" -> "Ambiguous header that requires human review."
-    "UNMAPPED" -> "Does not correspond to any known schema field."
   end
 
   # 3. Single Score (ordered rubric scale 2..10 levels)
@@ -132,7 +121,7 @@ end
 Every `use JevDSL` module automatically generates `evaluate/3`, `evaluate!/3`, `evaluate_many/3`, `available?/2`, `cache_key/2`, `contract/1`, `prepared/1`, `has_contract?/1`, `contract_fingerprint/1`, `__contracts__/0`, and `__export_cue__/0`:
 
 ```elixir
-# Single evaluation (choice answers return atoms by default: response.answers.tone.choice == :positive)
+# Single evaluation (choice answers return atoms: response.answers.tone.choice == :positive)
 {:ok, response} =
   MyApp.TriageContracts.evaluate(:sentiment, %{
     subject: "Thank you!",
@@ -142,15 +131,10 @@ Every `use JevDSL` module automatically generates `evaluate/3`, `evaluate!/3`, `
 # Pattern match directly on atom keys:
 %{choice: :positive, probabilities: %{positive: prob}} = response.answers.tone
 
-# Or use atom/string-safe answer helpers:
+# Or use answer helpers:
 {:ok, tone} = JevDSL.fetch_answer(response, :tone)
 true = JevDSL.choice?(tone, :positive)
 {:ok, ^prob} = JevDSL.probability(tone, :positive)
-
-# Or override at runtime with `keys: :strings` (or `keys: :atoms`)
-{:ok, str_resp} =
-  MyApp.TriageContracts.evaluate(:sentiment, %{body: "Great!"}, keys: :strings)
-# str_resp.answers.tone.choice => "positive"
 
 # Concurrent batch evaluation (resolves L1/L2 cache hits via get_many/2 first, dispatches only misses)
 results =

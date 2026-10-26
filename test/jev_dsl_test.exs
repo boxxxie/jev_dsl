@@ -68,7 +68,6 @@ defmodule JevDSLTest do
 
     defchoice "csv_column_mapping",
       as: "mapped_field",
-      keys: :strings,
       ask: "Map the CSV column header." do
       "given_name" -> "First name of the user."
       "Needs Review" -> "Ambiguous column."
@@ -163,14 +162,14 @@ defmodule JevDSLTest do
       assert SampleContracts.contract_fingerprint(:nonexistent) == :error
     end
 
-    test "preserves stab-clause declaration order in defchoice and defaults to :atoms unless keys: :strings" do
+    test "preserves stab-clause declaration order in defchoice and compiles option keys as atoms" do
       prep = SampleContracts.prepared(:sentiment)
       tone_def = prep.definitions["tone"]
       assert tone_def.option_order == [:positive, :neutral, :negative]
 
       csv_prep = SampleContracts.prepared("csv_column_mapping")
       csv_def = csv_prep.definitions["mapped_field"]
-      assert csv_def.option_order == ["given_name", "Needs Review", "UNMAPPED"]
+      assert csv_def.option_order == [:given_name, :"Needs Review", :UNMAPPED]
     end
 
     test "exports noul, choice, and score contracts to CUE schema via __export_cue__/0" do
@@ -332,7 +331,7 @@ defmodule JevDSLTest do
   end
 
   describe "JevDSL.Runner evaluation, SystemOneSDK.Test transport, and L1/L2 cache orchestration" do
-    test "executes end-to-end through SystemOneSDK.Test transport with both string and atom key modes",
+    test "executes end-to-end through SystemOneSDK.Test transport and caches atom-keyed responses",
          %{cache_opts: cache_opts} do
       client = SystemOneSDK.Test.client()
 
@@ -361,16 +360,15 @@ defmodule JevDSLTest do
       assert {:ok, 0.91} = JevDSL.probability(tone_ans, :positive)
       assert {:ok, 0.91} = JevDSL.probability(tone_ans, "positive")
 
-      # Second call with `keys: :strings` hits L1 cache and transforms keys to strings without another HTTP call
-      {:ok, str_resp} =
+      # Second call hits L1 cache without another HTTP call
+      {:ok, cached_resp} =
         SampleContracts.evaluate(
           "sentiment",
           state,
-          [client: client, keys: :strings] ++ cache_opts
+          [client: client] ++ cache_opts
         )
 
-      assert str_resp.answers.tone.choice == "positive"
-      assert str_resp.answers.tone.probabilities["positive"] == 0.91
+      assert cached_resp == resp
 
       SystemOneSDK.Test.verify!(client)
       assert length(SystemOneSDK.Test.requests(client)) == 1

@@ -113,11 +113,6 @@ defmodule JevDSL do
                   type: :pos_integer,
                   doc: "Alias for `:cache_ttl` in seconds."
                 ],
-                keys: [
-                  type: {:in, [:atoms, :strings]},
-                  default: :atoms,
-                  doc: "Default key representation (`:atoms` or `:strings`) for choice options."
-                ],
                 eval_fn_key: [
                   type: :atom,
                   default: :eval_fn,
@@ -171,7 +166,6 @@ defmodule JevDSL do
     contract_atom = normalize_key_atom!(name, __CALLER__)
     q_name = normalize_key_atom!(Keyword.get(opts, :as, contract_atom), __CALLER__)
     {prompt, criteria} = parse_noul_definition(opts, do_block, __CALLER__)
-    keys_mode = Keyword.get(opts, :keys)
 
     question_ast =
       quote do
@@ -188,7 +182,6 @@ defmodule JevDSL do
         __MODULE__,
         unquote(contract_atom),
         [unquote(question_ast)],
-        unquote(keys_mode),
         unquote(__CALLER__.file),
         unquote(__CALLER__.line)
       )
@@ -197,21 +190,19 @@ defmodule JevDSL do
 
   @doc """
   Defines a single-question Choice contract (`SystemOneSDK.Question.Choice`) using `key -> "description"` stab clauses.
-  Preserves the exact declaration order of options.
+  Preserves the exact declaration order of options and compiles option keys as atoms.
   """
   defmacro defchoice(name, opts_or_block, maybe_block \\ nil) do
     {opts, do_block} = normalize_macro_args(opts_or_block, maybe_block, __CALLER__)
     contract_atom = normalize_key_atom!(name, __CALLER__)
     q_name = normalize_key_atom!(Keyword.get(opts, :as, contract_atom), __CALLER__)
     {parsed_inst, criteria_pairs} = parse_clause_block(do_block, opts[:ask], __CALLER__)
-    keys_mode = Keyword.get(opts, :keys)
 
     question_ast =
       quote do
         %Question{
           name: unquote(q_name),
           type: :choice,
-          keys: unquote(keys_mode),
           instructions: unquote(parsed_inst),
           criteria: unquote(Macro.escape(criteria_pairs))
         }
@@ -222,7 +213,6 @@ defmodule JevDSL do
         __MODULE__,
         unquote(contract_atom),
         [unquote(question_ast)],
-        unquote(keys_mode),
         unquote(__CALLER__.file),
         unquote(__CALLER__.line)
       )
@@ -238,14 +228,12 @@ defmodule JevDSL do
     contract_atom = normalize_key_atom!(name, __CALLER__)
     q_name = normalize_key_atom!(Keyword.get(opts, :as, contract_atom), __CALLER__)
     {parsed_inst, level_pairs} = parse_clause_block(do_block, opts[:ask], __CALLER__)
-    keys_mode = Keyword.get(opts, :keys)
 
     question_ast =
       quote do
         %Question{
           name: unquote(q_name),
           type: :score,
-          keys: unquote(keys_mode),
           instructions: unquote(parsed_inst),
           criteria: unquote(Macro.escape(level_pairs))
         }
@@ -256,7 +244,6 @@ defmodule JevDSL do
         __MODULE__,
         unquote(contract_atom),
         [unquote(question_ast)],
-        unquote(keys_mode),
         unquote(__CALLER__.file),
         unquote(__CALLER__.line)
       )
@@ -266,10 +253,8 @@ defmodule JevDSL do
   @doc """
   Defines a multi-question contract combining `choice`, `noul`, and/or `score` sub-questions.
   """
-  defmacro defjev(name, opts_or_block, maybe_block \\ nil) do
-    {opts, block} = normalize_macro_args(opts_or_block, maybe_block, __CALLER__)
+  defmacro defjev(name, do: block) do
     contract_atom = normalize_key_atom!(name, __CALLER__)
-    keys_mode = Keyword.get(opts, :keys)
 
     exprs =
       case block do
@@ -284,7 +269,6 @@ defmodule JevDSL do
         __MODULE__,
         unquote(contract_atom),
         unquote(questions_ast),
-        unquote(keys_mode),
         unquote(__CALLER__.file),
         unquote(__CALLER__.line)
       )
@@ -349,15 +333,13 @@ defmodule JevDSL do
        when is_list(opts) do
     q_atom = normalize_key_atom!(Keyword.get(opts, :as, q_name), caller)
     {parsed_inst, criteria_pairs} = parse_clause_block(q_block, opts[:ask], caller)
-    q_keys = Keyword.get(opts, :keys)
 
     quote do
       %Question{
         name: unquote(q_atom),
         type: :choice,
         instructions: unquote(parsed_inst),
-        criteria: unquote(Macro.escape(criteria_pairs)),
-        keys: unquote(q_keys)
+        criteria: unquote(Macro.escape(criteria_pairs))
       }
     end
   end
@@ -370,15 +352,13 @@ defmodule JevDSL do
        when is_list(opts) do
     q_atom = normalize_key_atom!(Keyword.get(opts, :as, q_name), caller)
     {parsed_inst, level_pairs} = parse_clause_block(q_block, opts[:ask], caller)
-    q_keys = Keyword.get(opts, :keys)
 
     quote do
       %Question{
         name: unquote(q_atom),
         type: :score,
         instructions: unquote(parsed_inst),
-        criteria: unquote(Macro.escape(level_pairs)),
-        keys: unquote(q_keys)
+        criteria: unquote(Macro.escape(level_pairs))
       }
     end
   end
@@ -457,7 +437,7 @@ defmodule JevDSL do
   end
 
   @doc false
-  def __register_contract__(mod, name, questions, override_keys_mode, file, line) do
+  def __register_contract__(mod, name, questions, file, line) do
     existing = Module.get_attribute(mod, :jev_contracts) || []
 
     if List.keymember?(existing, name, 0) do
@@ -467,14 +447,9 @@ defmodule JevDSL do
         description: "Duplicate JevDSL contract #{inspect(name)} defined in #{inspect(mod)}"
     end
 
-    dsl_opts = Module.get_attribute(mod, :jev_dsl_opts) || []
-    default_keys_mode = override_keys_mode || Keyword.get(dsl_opts, :keys, :atoms)
-
     prepared_kw =
       try do
-        Enum.map(questions, fn q ->
-          __build_sdk_question__(q, q.keys || default_keys_mode)
-        end)
+        Enum.map(questions, &__build_sdk_question__/1)
       rescue
         err in [SystemOneSDK.Error] ->
           reraise CompileError.exception(
@@ -504,32 +479,24 @@ defmodule JevDSL do
   end
 
   @doc false
-  def __build_sdk_question__(question, keys_mode \\ :atoms)
-
-  def __build_sdk_question__(%Question{type: :choice} = q, keys_mode) do
+  def __build_sdk_question__(%Question{type: :choice} = q) do
     pairs =
-      Enum.map(q.criteria, fn {k, v} ->
-        key =
-          case keys_mode do
-            :strings -> to_string(k)
-            _ when is_atom(k) -> k
-            _ when is_binary(k) -> String.to_atom(k)
-          end
-
-        {key, v}
+      Enum.map(q.criteria, fn
+        {k, v} when is_atom(k) -> {k, v}
+        {k, v} when is_binary(k) -> {String.to_atom(k), v}
       end)
 
     inst = normalize_optional_instructions(q.instructions)
     {q.name, SDKQuestion.Choice.new!(inst, pairs)}
   end
 
-  def __build_sdk_question__(%Question{type: :score} = q, _keys_mode) do
+  def __build_sdk_question__(%Question{type: :score} = q) do
     levels = Enum.map(q.criteria, fn {k, v} -> {to_string(k), v} end)
     inst = normalize_optional_instructions(q.instructions)
     {q.name, SDKQuestion.Score.new!(inst, levels)}
   end
 
-  def __build_sdk_question__(%Question{type: :noul} = q, _keys_mode) do
+  def __build_sdk_question__(%Question{type: :noul} = q) do
     inst = normalize_optional_instructions(q.instructions)
 
     case q.criteria do
