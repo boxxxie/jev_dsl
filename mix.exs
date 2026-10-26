@@ -8,7 +8,7 @@ defmodule JevDSL.MixProject do
     [
       app: :jev_dsl,
       version: @version,
-      elixir: "~> 1.16",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
@@ -17,7 +17,10 @@ defmodule JevDSL.MixProject do
       source_url: @source_url,
       homepage_url: @source_url,
       package: package(),
-      docs: docs()
+      docs: docs(),
+      dialyzer: [
+        plt_add_apps: [:ex_unit, :mix, :igniter]
+      ]
     ]
   end
 
@@ -37,13 +40,20 @@ defmodule JevDSL.MixProject do
     [
       {:system_one_sdk, "~> 0.6.0"},
       {:jason, "~> 1.4"},
+      {:nimble_options, "~> 1.1"},
+      {:telemetry, "~> 1.3"},
+      {:igniter, "~> 0.8", optional: true},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:stream_data, "~> 1.1", only: [:dev, :test]}
     ]
   end
 
   defp package do
     [
+      name: "jev_dsl",
+      maintainers: ["Paul"],
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md usage-rules.md),
       licenses: ["MIT"],
       links: %{
@@ -69,7 +79,11 @@ defmodule JevDSL.MixProject do
         "Caching & Execution": [
           JevDSL.Runner,
           JevDSL.Cache,
-          JevDSL.Cache.ETS
+          JevDSL.Cache.ETS,
+          JevDSL.Error
+        ],
+        Installers: [
+          Mix.Tasks.JevDsl.Install
         ]
       ]
     ]

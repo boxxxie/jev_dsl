@@ -11,19 +11,27 @@
 
 ## Features
 
-- **Compile-Time Validation**: Every `defnoul`, `defchoice`, `defscore`, and `defjev` block is validated at compile time via `SystemOneSDK.prepare/1`. Invalid criteria, duplicate option keys, or malformed instructions raise a `CompileError` with exact file and line numbers before your app boots.
+- **Compile-Time Validation**: Every `defnoul`, `defchoice`, `defscore`, `defjev`, and `defalias` block is validated at compile time via `SystemOneSDK.prepare/1`. Invalid criteria, duplicate contract names, or broken aliases raise a `CompileError` with exact file and line numbers before your app boots.
+- **Atom & String Interoperability**: Contract keys, question keys, stab-clause keys, `evaluate/3` lookups, and answer helpers (`JevDSL.fetch_answer/2`, `JevDSL.choice?/2`, `JevDSL.probability/2`) accept atoms and strings interchangeably, plus `keys: :strings | :atoms` response key transformation.
 - **Zero Re-Serialization Overhead**: Prepared wire payloads (`Jason.Fragment`) are rehydrated once and cached in `:persistent_term` for $O(1)$ access across all BEAM processes.
-- **Content-Addressed SHA-256 Caching (`JevDSL.Cache`)**: Cache keys (`"jev_<sha256>"`) combine the canonicalized input `state` and the compiled `SystemOneSDK.Prepared.fingerprint`. Editing a prompt or rubric immediately produces a new fingerprint and cache key—never serving stale judgments.
+- **Content-Addressed SHA-256 Caching (`JevDSL.Cache`)**: Cache keys (`"jev_<sha256>"`) combine the recursively canonicalized input `state` (maps, structs, lists, tuples) and the compiled `SystemOneSDK.Prepared.fingerprint`. Editing a prompt or rubric immediately produces a new fingerprint and cache key—never serving stale judgments.
 - **Confidence-Gated TTLs**: High-confidence judgments (`>= 0.65`) are cached for the full TTL (default 7 days), ambiguous judgments (`< 0.65`) receive a short 5-minute TTL, and transient errors are never cached.
-- **Two-Tier (L1 + L2) Execution (`JevDSL.Runner`)**: Ships with a zero-dependency concurrent ETS L1 cache (`JevDSL.Cache.ETS`) and supports pluggable L1/L2 adapters (e.g. Memcached/Cachex L1 + DuckDB/Parquet or Postgres L2) with automatic L2 $\to$ L1 warming, L1 $\to$ L2 backfill, and offline cache-only replay (`cache_only: true`).
-- **Deterministic Test Mocking**: Inject `:eval_fn` (a 1-arity function) or `cache_only: true` in tests without touching global state or network mocks.
+- **Two-Tier (L1 + L2) Execution (`JevDSL.Runner`)**: Ships with a concurrent ETS L1 cache (`JevDSL.Cache.ETS`) supporting both caller supervision (`start_link/1` + periodic TTL pruning) and zero-config `:kernel_sup` heir protection, plus pluggable L1/L2 adapters (`get_many/2` / `put_many/2`) with automatic L2 $\to$ L1 warming, L1 $\to$ L2 backfill, and offline replay (`cache_only: true`).
+- **First-Class Testing (`SystemOneSDK.Test` & `:eval_fn`)**: Works seamlessly with `SystemOneSDK.Test.client()` transport stubs, 1-arity `:eval_fn` mocks, or `cache_only: true` offline fixtures.
+- **Igniter Installer (`Mix.Tasks.JevDsl.Install`)**: Run `mix igniter.install jev_dsl` to automatically configure `.formatter.exs` and optionally scaffold a contract module.
 - **CUE Schema Export (`JevDSL.CUE`)**: Export all contracts in a module to a deterministic CUE schema via `__export_cue__/0`.
 
 ---
 
 ## Installation
 
-Add `jev_dsl` to your dependencies in `mix.exs`:
+Install via [Igniter](https://hex.pm/packages/igniter):
+
+```bash
+mix igniter.install jev_dsl --module MyApp.TriageContracts --yes
+```
+
+Or add `jev_dsl` manually to your dependencies in `mix.exs`:
 
 ```elixir
 def deps do
@@ -33,7 +41,7 @@ def deps do
 end
 ```
 
-To format `defnoul`, `defchoice`, `defscore`, `defjev`, and `defalias` without parentheses, add `:jev_dsl` to `import_deps` in your `.formatter.exs`:
+And add `:jev_dsl` to `import_deps` in your `.formatter.exs`:
 
 ```elixir
 [
@@ -59,15 +67,22 @@ defmodule MyApp.TriageContracts do
     "Does this message contain unsolicited promotional spam?"
   end
 
-  # 2. Single Choice (mutually exclusive options)
+  # 1b. Noul with explicit true/false criteria
+  defnoul :is_urgent, ask: "Does this ticket require immediate paging?" do
+    true -> "Production outage or active security breach."
+    false -> "Routine bug report or feature request."
+  end
+
+  # 2. Single Choice (mutually exclusive options; preserves stab-clause order)
   defchoice :sentiment,
+    as: :tone,
     ask: "Classify the overall tone of the message." do
     positive -> "Constructive, appreciative, or favorable tone."
     neutral -> "Factual or informational without strong emotion."
     negative -> "Critical, frustrated, or dissatisfied tone."
   end
 
-  # 3. Single Score (ordered rubric scale)
+  # 3. Single Score (ordered rubric scale 2..10 levels)
   defscore :completeness,
     ask: "Rate how complete the submission is." do
     incomplete -> "Missing required identity or contact fields."
@@ -103,17 +118,27 @@ end
 
 ## Evaluating Contracts
 
-Every `use JevDSL` module automatically generates `evaluate/3`, `evaluate_many/3`, `available?/2`, `cache_key/2`, `prepared/1`, `has_contract?/1`, `contract_fingerprint/1`, `__contracts__/0`, and `__export_cue__/0`:
+Every `use JevDSL` module automatically generates `evaluate/3`, `evaluate!/3`, `evaluate_many/3`, `available?/2`, `cache_key/2`, `contract/1`, `prepared/1`, `has_contract?/1`, `contract_fingerprint/1`, `__contracts__/0`, and `__export_cue__/0`:
 
 ```elixir
-# Single evaluation (automatically checks L1/L2 cache by state + fingerprint)
+# Single evaluation (accepts atom or string contract keys)
 {:ok, response} =
   MyApp.TriageContracts.evaluate(:sentiment, %{
     subject: "Thank you!",
     body: "The new release is super fast."
   })
 
-# Concurrent batch evaluation (resolves L1/L2 cache hits first, dispatches only misses)
+# Atom/string-safe answer helpers
+{:ok, tone} = JevDSL.fetch_answer(response, :tone)
+true = JevDSL.choice?(tone, :positive)
+{:ok, prob} = JevDSL.probability(tone, "positive")
+
+# Or request atom keys directly on the response
+{:ok, atom_resp} =
+  MyApp.TriageContracts.evaluate("sentiment", %{body: "Great!"}, keys: :atoms)
+# atom_resp.answers.tone.choice => :positive
+
+# Concurrent batch evaluation (resolves L1/L2 cache hits via get_many/2 first, dispatches only misses)
 results =
   MyApp.TriageContracts.evaluate_many(:is_spam, [
     %{body: "Buy cheap followers now"},
@@ -121,7 +146,7 @@ results =
   ])
 ```
 
-### Configuration
+### Configuration & Supervision
 
 Configure your API key via application config, runtime options, or `TYPESAFE_API_KEY`:
 
@@ -130,6 +155,14 @@ Configure your API key via application config, runtime options, or `TYPESAFE_API
 config :my_app, MyApp.TriageContracts,
   api_key: System.get_env("TYPESAFE_API_KEY"),
   base_url: System.get_env("TYPESAFE_BASE_URL")
+```
+
+To supervise the ETS L1 cache with automatic periodic TTL pruning, add `JevDSL.Cache.ETS` to your application supervision tree:
+
+```elixir
+children = [
+  {JevDSL.Cache.ETS, name: MyApp.JevCache, table: :jev_dsl_ets_cache}
+]
 ```
 
 ---
@@ -151,6 +184,11 @@ defmodule MyApp.Tier2ParquetCache do
   end
 
   @impl true
+  def get_many(cache_keys, _opts) do
+    MyApp.Lakehouse.lookup_jev_hashes(cache_keys)
+  end
+
+  @impl true
   def put(cache_key, value, opts) do
     put_many([{cache_key, nil, %{}, value}], opts)
   end
@@ -164,38 +202,40 @@ defmodule MyApp.Tier2ParquetCache do
 end
 ```
 
-Wire both tiers in `use JevDSL`:
-
-```elixir
-defmodule MyApp.Contracts do
-  use JevDSL,
-    otp_app: :my_app,
-    cache: JevDSL.Cache.ETS,
-    tier2_cache: MyApp.Tier2ParquetCache
-end
-```
-
-When `cache_only: true` is passed (or when running offline in CI with a committed Tier-2 fixture), `JevDSL.Runner` serves deterministic hits from L1/`tier2_cache`, warms L1 from Tier-2, and returns `{:error, :cache_miss}` on misses without requiring an API key.
-
 ---
 
 ## Testing & Mocking
 
-In unit and ATDD tests, inject a 1-arity `:eval_fn` function or pass `cache_only: true`:
+`JevDSL` supports three complementary testing modes:
 
-```elixir
-# Inject a deterministic 1-arity function
-mock_fn = fn state ->
-  {:ok, %{answers: %{is_spam: %{noul: if(state.body =~ "spam", do: 0.98, else: 0.02)}}}}
-end
+1. **`SystemOneSDK.Test` Transport Stubs (Full Wire + Semantic Validation)**:
+   ```elixir
+   client =
+     SystemOneSDK.Test.client()
+     |> SystemOneSDK.Test.stub(tone: {:choice, "positive", 0.92})
 
-assert {:ok, %{answers: %{is_spam: %{noul: 0.98}}}} =
-         MyApp.TriageContracts.evaluate(:is_spam, %{body: "free spam"}, eval_fn: mock_fn)
+   assert {:ok, resp} =
+            MyApp.TriageContracts.evaluate(:sentiment, %{body: "Great!"}, client: client)
 
-# Or run strictly against L1/L2 cached fixtures without making network calls
-assert {:error, :cache_miss} =
-         MyApp.TriageContracts.evaluate(:is_spam, %{body: "uncached"}, cache_only: true)
-```
+   SystemOneSDK.Test.verify!(client)
+   SystemOneSDK.Test.close(client)
+   ```
+
+2. **1-Arity `:eval_fn` Injection**:
+   ```elixir
+   mock_fn = fn state ->
+     {:ok, %{answers: %{is_spam: %{noul: if(state.body =~ "spam", do: 0.98, else: 0.02)}}}}
+   end
+
+   assert {:ok, %{answers: %{is_spam: %{noul: 0.98}}}} =
+            MyApp.TriageContracts.evaluate(:is_spam, %{body: "free spam"}, eval_fn: mock_fn)
+   ```
+
+3. **Offline Cache Replay (`cache_only: true`)**:
+   ```elixir
+   assert {:error, :cache_miss} =
+            MyApp.TriageContracts.evaluate(:is_spam, %{body: "uncached"}, cache_only: true)
+   ```
 
 ---
 
