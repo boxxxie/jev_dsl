@@ -126,13 +126,35 @@ defmodule JevDSL do
                   type: :any,
                   doc: "Optional default TypeSafe API key."
                 ],
+                gemini_api_key: [
+                  type: :any,
+                  doc: "Optional Gemini or LiteLLM API key for `:gemini_decisions`."
+                ],
+                backend: [
+                  type: {:in, [:system_one, :gemini_decisions]},
+                  default: :system_one,
+                  doc: "Execution backend (`:system_one` or `:gemini_decisions`)."
+                ],
+                decisions_mode: [
+                  type: {:in, [:unified, :native]},
+                  doc:
+                    "Wire format for `:gemini_decisions` (`:unified` for `/v1/decisions`, `:native` for `/v1beta/decisions`)."
+                ],
+                auth_mode: [
+                  type: {:in, [:bearer, :x_goog_api_key]},
+                  doc: "Authentication header mode (`:bearer` or `:x_goog_api_key`)."
+                ],
+                decisions_path: [
+                  type: :string,
+                  doc: "Optional custom endpoint path override for `:gemini_decisions`."
+                ],
                 base_url: [
                   type: :any,
-                  doc: "Optional default TypeSafe base URL."
+                  doc: "Optional default base URL."
                 ],
                 model: [
                   type: :any,
-                  doc: "Optional default System One model identifier."
+                  doc: "Optional default model identifier."
                 ],
                 max_concurrency: [
                   type: :pos_integer,
