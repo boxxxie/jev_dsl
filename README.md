@@ -164,6 +164,43 @@ children = [
 ]
 ```
 
+### Gemini Decisions API (`gemini-decision-1`)
+
+`JevDSL` also supports Google's **Gemini Decisions API** (`gemini-decision-1`) via both LiteLLM's unified `/v1/decisions` endpoint and native `/v1beta/decisions` (or `/gemini/v1beta/decisions` passthrough):
+
+```elixir
+# LiteLLM unified /v1/decisions (Authorization: Bearer)
+defmodule MyApp.UnifiedGeminiContracts do
+  use JevDSL,
+    otp_app: :my_app,
+    backend: :gemini_decisions,
+    decisions_mode: :unified,
+    model: "gemini-decision-1",
+    base_url: "http://100.88.180.12:4000"
+
+  defnoul :is_spam do
+    "Does this message contain unsolicited promotional spam?"
+  end
+end
+
+# Native /gemini/v1beta/decisions passthrough (x-goog-api-key)
+defmodule MyApp.NativeGeminiContracts do
+  use JevDSL,
+    otp_app: :my_app,
+    backend: :gemini_decisions,
+    decisions_mode: :native,
+    auth_mode: :x_goog_api_key,
+    model: "gemini-decision-1",
+    base_url: "https://2-29-102-196.sslip.io"
+
+  defnoul :is_spam do
+    "Does this message contain unsolicited promotional spam?"
+  end
+end
+```
+
+API keys for `:gemini_decisions` are resolved from `:gemini_api_key` / `:api_key` options, `otp_app` config, `LITELLM_API_KEY`, or `GEMINI_API_KEY`.
+
 ---
 
 ## Custom L1 & Tier-2 Cache Adapters (`JevDSL.Cache`)
