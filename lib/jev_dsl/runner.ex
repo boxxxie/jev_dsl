@@ -246,6 +246,7 @@ defmodule JevDSL.Runner do
         fn -> Application.get_env(:jev_dsl, :gemini_api_key) end,
         fn -> Application.get_env(:jev_dsl, :api_key) end,
         fn -> System.get_env("LITELLM_API_KEY") end,
+        fn -> System.get_env("LITELLM_MASTER_KEY") end,
         fn -> System.get_env("GEMINI_API_KEY") end
       ]
     )
@@ -276,6 +277,17 @@ defmodule JevDSL.Runner do
 
       true ->
         Enum.find_value(fallback_funs, fn fun -> non_blank_secret(fun.()) end)
+    end
+  end
+
+  @doc false
+  def resolve_override_secret(opts, keys, fallback_raw) do
+    opt_val = Enum.find_value(keys, &non_blank_secret(Keyword.get(opts, &1)))
+
+    cond do
+      is_binary(opt_val) -> opt_val
+      explicit_blank_opt?(opts, keys) -> nil
+      true -> resolve_secret(fallback_raw)
     end
   end
 
@@ -428,12 +440,7 @@ defmodule JevDSL.Runner do
   end
 
   defp resolve_synced_api_key(opts, pclient) do
-    if Keyword.has_key?(opts, :api_key) or Keyword.has_key?(opts, :gemini_api_key) do
-      non_blank_secret(Keyword.get(opts, :api_key)) ||
-        non_blank_secret(Keyword.get(opts, :gemini_api_key))
-    else
-      resolve_secret(pclient.api_key)
-    end
+    resolve_override_secret(opts, [:api_key, :gemini_api_key], pclient.api_key)
   end
 
   defp resolve_synced_decisions_path(opts, pclient, effective_mode, gemini_mod) do

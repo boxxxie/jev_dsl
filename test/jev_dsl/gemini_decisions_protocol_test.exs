@@ -322,6 +322,28 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert {:ok, %{noul: decision_prob}} = JevDSL.fetch_answer(decision_resp, :is_spam)
       assert decision_prob < 0.2
       assert_in_delta decision_prob, 0.05, 1.0e-6
+
+      assert {:ok, decision_prob_resp} =
+               Protocol.decode_response(
+                 %{"decision" => false, "probability" => 0.95},
+                 prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, %{noul: decision_prob2}} = JevDSL.fetch_answer(decision_prob_resp, :is_spam)
+      assert decision_prob2 < 0.2
+      assert_in_delta decision_prob2, 0.05, 1.0e-6
+
+      assert {:ok, noul_prob_resp} =
+               Protocol.decode_response(
+                 %{"noul" => false, "probability" => 0.98},
+                 prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, %{noul: noul_prob2}} = JevDSL.fetch_answer(noul_prob_resp, :is_spam)
+      assert noul_prob2 < 0.2
+      assert_in_delta noul_prob2, 0.02, 1.0e-6
     end
 
     test "rejects hallucinated choices, backfills omitted flat choice probabilities, and guards flat type mismatches" do
@@ -336,7 +358,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
                  "gemini-decision-1"
                )
 
-      # Flat choice without probabilities backfills %{choice => confidence}
+      # Flat choice without probabilities backfills %{choice => confidence} and remainder across valid options
       assert {:ok, flat_choice_resp} =
                Protocol.decode_response(
                  %{"choice" => "positive", "confidence" => 0.92},
@@ -347,6 +369,14 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert {:ok, tone} = JevDSL.fetch_answer(flat_choice_resp, :tone)
       assert JevDSL.choice?(tone, :positive)
       assert {:ok, 0.92} = JevDSL.probability(tone, :positive)
+      assert {:ok, neg_prob} = JevDSL.probability(tone, :negative)
+      assert_in_delta neg_prob, 0.08, 1.0e-6
+
+      assert {:ok, enriched_flat} =
+               SystemOneSDK.SemanticResponse.enrich(flat_choice_resp, choice_prep, 0.02)
+
+      assert {:ok, enriched_tone} = JevDSL.fetch_answer(enriched_flat, :tone)
+      assert JevDSL.choice?(enriched_tone, :positive)
 
       # Flat choice or score payload rejected on single-question noul contract
       assert {:error, %JevDSL.Error{type: :invalid_response}} =

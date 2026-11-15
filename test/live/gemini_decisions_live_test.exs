@@ -94,11 +94,13 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
   test "evaluates noul, choice, score, and defjev on gemini-decision-1 via unified /v1/decisions" do
     base_url = System.get_env("LITELLM_BASE_URL") || "http://100.88.180.12:4000"
+    api_opts = litellm_api_key_opt()
 
     assert {:ok, resp} =
-             LiveUnifiedContracts.evaluate(:is_spam, %{body: "Buy cheap followers now!"},
-               base_url: base_url,
-               cache?: false
+             LiveUnifiedContracts.evaluate(
+               :is_spam,
+               %{body: "Buy cheap followers now!"},
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(resp, :is_spam)
@@ -109,8 +111,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
              LiveUnifiedContracts.evaluate(
                :is_spam,
                %{body: "Hi, could you please help reset my account password?"},
-               base_url: base_url,
-               cache?: false
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, %{noul: neg_prob}} = JevDSL.fetch_answer(neg_resp, :is_spam)
@@ -118,9 +119,10 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     assert neg_prob < 0.2
 
     assert {:ok, choice_resp} =
-             LiveUnifiedContracts.evaluate(:sentiment, %{body: "Thanks for the great fix!"},
-               base_url: base_url,
-               cache?: false
+             LiveUnifiedContracts.evaluate(
+               :sentiment,
+               %{body: "Thanks for the great fix!"},
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, tone} = JevDSL.fetch_answer(choice_resp, :tone)
@@ -130,8 +132,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
              LiveUnifiedContracts.evaluate(
                :clarity,
                %{body: "1. Open app. 2. Click save. 3. Observe 500 error with full stacktrace."},
-               base_url: base_url,
-               cache?: false
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, clarity} = JevDSL.fetch_answer(score_resp, :clarity)
@@ -144,8 +145,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
              LiveUnifiedContracts.evaluate(
                :triage,
                %{body: "Production DB is down! Steps: 1. Open app 2. Observe 502"},
-               base_url: base_url,
-               cache?: false
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, %{noul: urgent_prob}} = JevDSL.fetch_answer(jev_resp, :urgent)
@@ -157,15 +157,32 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     assert is_number(jev_clarity.score)
     assert jev_clarity.score >= 0.0 and jev_clarity.score <= 2.0
     assert jev_clarity.level in 0..2
+
+    assert {:ok, routine_jev_resp} =
+             LiveUnifiedContracts.evaluate(
+               :triage,
+               %{
+                 body: "Question: Could you update the copyright year in the footer next release?"
+               },
+               [base_url: base_url, cache?: false] ++ api_opts
+             )
+
+    assert {:ok, %{noul: routine_urgent_prob}} = JevDSL.fetch_answer(routine_jev_resp, :urgent)
+    assert is_number(routine_urgent_prob)
+    assert routine_urgent_prob < 0.2
+    assert {:ok, routine_prio} = JevDSL.fetch_answer(routine_jev_resp, :priority)
+    assert JevDSL.choice?(routine_prio, :p2)
   end
 
   test "evaluates noul, choice, score, and defjev on gemini-decision-1 via native /gemini/v1beta/decisions passthrough" do
     base_url = System.get_env("GEMINI_DECISIONS_BASE_URL") || "https://2-29-102-196.sslip.io"
+    api_opts = native_api_key_opt(base_url)
 
     assert {:ok, resp} =
-             LiveNativeContracts.evaluate(:is_spam, %{body: "Buy cheap followers now!"},
-               base_url: base_url,
-               cache?: false
+             LiveNativeContracts.evaluate(
+               :is_spam,
+               %{body: "Buy cheap followers now!"},
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(resp, :is_spam)
@@ -176,8 +193,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
              LiveNativeContracts.evaluate(
                :is_spam,
                %{body: "Hi, could you please help reset my account password?"},
-               base_url: base_url,
-               cache?: false
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, %{noul: neg_prob}} = JevDSL.fetch_answer(neg_resp, :is_spam)
@@ -185,9 +201,10 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     assert neg_prob < 0.2
 
     assert {:ok, choice_resp} =
-             LiveNativeContracts.evaluate(:sentiment, %{body: "Thanks for the great fix!"},
-               base_url: base_url,
-               cache?: false
+             LiveNativeContracts.evaluate(
+               :sentiment,
+               %{body: "Thanks for the great fix!"},
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, tone} = JevDSL.fetch_answer(choice_resp, :tone)
@@ -197,8 +214,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
              LiveNativeContracts.evaluate(
                :clarity,
                %{body: "1. Open app. 2. Click save. 3. Observe 500 error with full stacktrace."},
-               base_url: base_url,
-               cache?: false
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, clarity} = JevDSL.fetch_answer(score_resp, :clarity)
@@ -211,8 +227,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
              LiveNativeContracts.evaluate(
                :triage,
                %{body: "Production DB is down! Steps: 1. Open app 2. Observe 502"},
-               base_url: base_url,
-               cache?: false
+               [base_url: base_url, cache?: false] ++ api_opts
              )
 
     assert {:ok, %{noul: urgent_prob}} = JevDSL.fetch_answer(jev_resp, :urgent)
@@ -224,5 +239,48 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     assert is_number(jev_clarity.score)
     assert jev_clarity.score >= 0.0 and jev_clarity.score <= 2.0
     assert jev_clarity.level in 0..2
+
+    assert {:ok, routine_jev_resp} =
+             LiveNativeContracts.evaluate(
+               :triage,
+               %{
+                 body: "Question: Could you update the copyright year in the footer next release?"
+               },
+               [base_url: base_url, cache?: false] ++ api_opts
+             )
+
+    assert {:ok, %{noul: routine_urgent_prob}} = JevDSL.fetch_answer(routine_jev_resp, :urgent)
+    assert is_number(routine_urgent_prob)
+    assert routine_urgent_prob < 0.2
+    assert {:ok, routine_prio} = JevDSL.fetch_answer(routine_jev_resp, :priority)
+    assert JevDSL.choice?(routine_prio, :p2)
+  end
+
+  defp litellm_api_key_opt do
+    key =
+      Enum.find(
+        [
+          System.get_env("LITELLM_API_KEY"),
+          System.get_env("LITELLM_MASTER_KEY"),
+          System.get_env("GEMINI_API_KEY")
+        ],
+        fn
+          val when is_binary(val) -> String.starts_with?(val, "sk-")
+          _ -> false
+        end
+      )
+
+    if key, do: [api_key: key], else: []
+  end
+
+  defp native_api_key_opt(base_url) do
+    if String.contains?(base_url, "generativelanguage.googleapis.com") do
+      case System.get_env("GEMINI_API_KEY") do
+        val when is_binary(val) and val != "" -> [api_key: val]
+        _ -> []
+      end
+    else
+      litellm_api_key_opt()
+    end
   end
 end

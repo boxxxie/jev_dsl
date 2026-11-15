@@ -211,19 +211,7 @@ defmodule JevDSL.Providers.GeminiDecisions do
   end
 
   defp resolve_call_api_key(client, opts) do
-    if Keyword.has_key?(opts, :api_key) or Keyword.has_key?(opts, :gemini_api_key) do
-      non_blank_secret(Keyword.get(opts, :api_key)) ||
-        non_blank_secret(Keyword.get(opts, :gemini_api_key))
-    else
-      JevDSL.Runner.resolve_secret(client.api_key)
-    end
-  end
-
-  defp non_blank_secret(raw) do
-    case JevDSL.Runner.resolve_secret(raw) do
-      val when is_binary(val) and val != "" -> val
-      _ -> nil
-    end
+    JevDSL.Runner.resolve_override_secret(opts, [:api_key, :gemini_api_key], client.api_key)
   end
 
   defp resolve_call_decisions_path(client, opts, decisions_mode) do

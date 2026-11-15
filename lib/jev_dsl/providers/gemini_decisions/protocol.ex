@@ -11,6 +11,18 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   @type mode :: :unified | :native
   @type auth_mode :: :bearer | :x_goog_api_key
 
+  @noul_boolean_keys ["noul", "decision", "answer", "value", "result", "predicate", "probability"]
+  @noul_numeric_keys [
+    "noul",
+    "probability",
+    "predicate",
+    "decision",
+    "answer",
+    "value",
+    "result",
+    "confidence"
+  ]
+
   @doc """
   Builds authentication headers for the given `api_key` and `auth_mode`.
   """
@@ -338,7 +350,7 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
          true <- is_number(conf) do
       probs =
         if is_nil(raw_ans["probabilities"]),
-          do: %{choice_str => conf},
+          do: backfill_choice_probabilities(choice_str, conf, valid_options),
           else: parsed_probs
 
       {:ok,
@@ -408,39 +420,41 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   end
 
   defp resolve_noul_probability(raw_ans) do
-    cond do
-      present_value?(raw_ans, "noul") ->
-        resolve_noul_field(raw_ans["noul"], raw_ans["confidence"])
+    case find_boolean_field(raw_ans, @noul_boolean_keys) do
+      {:ok, bool_val} ->
+        conf =
+          case raw_ans["confidence"] do
+            nil -> numeric_prob(raw_ans["probability"]) || numeric_prob(raw_ans["noul"])
+            val -> val
+          end
 
-      present_value?(raw_ans, "probability") ->
-        resolve_noul_field(raw_ans["probability"], raw_ans["confidence"])
+        resolve_boolean_confidence(bool_val, conf)
 
-      boolean_key =
-          Enum.find(
-            ["decision", "answer", "value", "result", "predicate"],
-            &present_value?(raw_ans, &1)
-          ) ->
-        resolve_boolean_field(raw_ans[boolean_key], raw_ans["confidence"])
+      :none ->
+        resolve_first_numeric_noul(raw_ans)
+    end
+  end
 
-      true ->
-        resolve_numeric_prob(raw_ans["confidence"])
+  defp find_boolean_field(raw_ans, keys) do
+    Enum.find_value(keys, :none, fn key ->
+      case Map.fetch(raw_ans, key) do
+        {:ok, val} when is_boolean(val) -> {:ok, val}
+        _ -> nil
+      end
+    end)
+  end
+
+  defp resolve_first_numeric_noul(raw_ans) do
+    case Enum.find(@noul_numeric_keys, &present_value?(raw_ans, &1)) do
+      nil -> :error
+      key -> resolve_numeric_prob(raw_ans[key])
     end
   end
 
   defp present_value?(map, key), do: Map.has_key?(map, key) and not is_nil(map[key])
 
-  defp resolve_noul_field(val, _conf) when is_number(val) and val >= 0.0 and val <= 1.0,
-    do: {:ok, val}
-
-  defp resolve_noul_field(val, conf) when is_boolean(val),
-    do: resolve_boolean_confidence(val, conf)
-
-  defp resolve_noul_field(_, _), do: :error
-
-  defp resolve_boolean_field(val, conf) when is_boolean(val),
-    do: resolve_boolean_confidence(val, conf)
-
-  defp resolve_boolean_field(_, _), do: :error
+  defp numeric_prob(val) when is_number(val), do: val
+  defp numeric_prob(_), do: nil
 
   defp resolve_numeric_prob(val) when is_number(val) and val >= 0.0 and val <= 1.0,
     do: {:ok, val}
@@ -455,6 +469,30 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   end
 
   defp resolve_boolean_confidence(_, _), do: :error
+
+  defp backfill_choice_probabilities(choice_str, conf, valid_options)
+       when is_number(conf) and conf >= 0.0 and conf <= 1.0 do
+    other_options =
+      valid_options
+      |> MapSet.delete(choice_str)
+      |> MapSet.to_list()
+
+    case other_options do
+      [] ->
+        %{choice_str => conf}
+
+      others ->
+        remainder = max(1.0 - conf, 0.0) / length(others)
+
+        others
+        |> Map.new(&{&1, remainder})
+        |> Map.put(choice_str, conf)
+    end
+  end
+
+  defp backfill_choice_probabilities(choice_str, conf, _valid_options) do
+    %{choice_str => conf}
+  end
 
   defp choice_valid_options(defn, option_order) do
     cond do

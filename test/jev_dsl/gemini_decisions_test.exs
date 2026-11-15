@@ -224,8 +224,10 @@ defmodule JevDSL.GeminiDecisionsTest do
       System.put_env(env_var, "  sk-from-env  ")
       prev_jev = Application.get_env(:jev_dsl, :gemini_api_key)
       prev_litellm = System.get_env("LITELLM_API_KEY")
+      prev_master = System.get_env("LITELLM_MASTER_KEY")
       prev_gemini = System.get_env("GEMINI_API_KEY")
       System.delete_env("LITELLM_API_KEY")
+      System.delete_env("LITELLM_MASTER_KEY")
       System.delete_env("GEMINI_API_KEY")
 
       on_exit(fn ->
@@ -236,6 +238,7 @@ defmodule JevDSL.GeminiDecisionsTest do
           else: Application.put_env(:jev_dsl, :gemini_api_key, prev_jev)
 
         if prev_litellm, do: System.put_env("LITELLM_API_KEY", prev_litellm)
+        if prev_master, do: System.put_env("LITELLM_MASTER_KEY", prev_master)
         if prev_gemini, do: System.put_env("GEMINI_API_KEY", prev_gemini)
       end)
 
@@ -315,8 +318,13 @@ defmodule JevDSL.GeminiDecisionsTest do
               {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.81}]}}
 
             {"/gemini/v1beta/decisions", "gemini-decision-1"} ->
-              assert req.headers["x-goog-api-key"] == "sk-nat"
-              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.82}}}}
+              case req.headers["x-goog-api-key"] do
+                "sk-nat" ->
+                  {200, %{"answers" => %{"is_spam" => %{"noul" => 0.82}}}}
+
+                "sk-direct-override" ->
+                  {200, %{"answers" => %{"is_spam" => %{"noul" => 0.84}}}}
+              end
 
             {"/gemini/v1beta/decisions", "gemini-decision-2"} ->
               assert req.headers["x-goog-api-key"] == "sk-override"
@@ -436,6 +444,31 @@ defmodule JevDSL.GeminiDecisionsTest do
 
       assert {:ok, %{noul: 0.83}} = JevDSL.fetch_answer(batch_ovr, :is_spam)
       assert Driver.request_count(pid) == 5
+
+      # 7. Direct GeminiDecisions.system_one_prepared/4 honors per-call overrides and unresolved secret fallback
+      assert {:ok, direct_resp} =
+               GeminiDecisions.system_one_prepared(
+                 uni_client.provider_client,
+                 state,
+                 prep,
+                 decisions_mode: :native,
+                 auth_mode: :x_goog_api_key,
+                 api_key: "sk-direct-override"
+               )
+
+      assert {:ok, %{noul: 0.84}} = JevDSL.fetch_answer(direct_resp, :is_spam)
+      assert Driver.request_count(pid) == 6
+
+      assert {:ok, fallback_resp} =
+               GeminiDecisions.system_one_prepared(
+                 uni_client.provider_client,
+                 state,
+                 prep,
+                 api_key: {:system, "MISSING_ENV_VAR_XYZ"}
+               )
+
+      assert {:ok, %{noul: 0.81}} = JevDSL.fetch_answer(fallback_resp, :is_spam)
+      assert Driver.request_count(pid) == 7
 
       SystemOneSDK.Test.verify!(sys_client)
       SystemOneSDK.Test.close(sys_client)
