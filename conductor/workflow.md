@@ -11,6 +11,7 @@
 4. **High Code Coverage:** Aim for >80% code coverage for all modules
 5. **User Experience First:** Every decision should prioritize user experience
 6. **Non-Interactive & CI-Aware:** Prefer non-interactive commands. Use `CI=true` for watch-mode tools (tests, linters) to ensure single execution.
+7. **Feature Branch Per Track:** Always create and check out a feature branch (e.g., `track/<track_id>` or `feat/<shortname>`) from `master` before starting Phase 1 of a track. Never commit track implementation work directly to `master`.
 
 ## Task Workflow
 
