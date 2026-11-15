@@ -117,4 +117,10 @@ test "evaluates through SystemOneSDK.Test transport", %{cache_opts: cache_opts} 
   SystemOneSDK.Test.close(client)
 end
 ```
+
+### 4. Gemini Decisions Backend (`gemini-decision-1`)
+
+- Set `backend: :gemini_decisions` on `use JevDSL` or per-call options.
+- Use `decisions_mode: :unified` (default, `/v1/decisions`, `Authorization: Bearer`) or `decisions_mode: :native` (`/gemini/v1beta/decisions` or `/v1beta/decisions`, `x-goog-api-key`).
+- Cache keys automatically include backend, `decisions_mode`, and `model` so cached entries never collide across providers.
 <!-- jev_dsl-end -->
