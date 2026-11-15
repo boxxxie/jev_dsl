@@ -73,7 +73,7 @@ defmodule JevDSL do
         )
   """
 
-  alias JevDSL.{Cache, Contract, CUE, Question, Runner}
+  alias JevDSL.{Contract, CUE, Question, Runner}
   alias SystemOneSDK.Question, as: SDKQuestion
 
   @use_schema NimbleOptions.new!(
@@ -126,13 +126,35 @@ defmodule JevDSL do
                   type: :any,
                   doc: "Optional default TypeSafe API key."
                 ],
+                gemini_api_key: [
+                  type: :any,
+                  doc: "Optional Gemini or LiteLLM API key for `:gemini_decisions`."
+                ],
+                backend: [
+                  type: {:in, [:system_one, :gemini_decisions]},
+                  default: :system_one,
+                  doc: "Execution backend (`:system_one` or `:gemini_decisions`)."
+                ],
+                decisions_mode: [
+                  type: {:in, [:unified, :native]},
+                  doc:
+                    "Wire format for `:gemini_decisions` (`:unified` for `/v1/decisions`, `:native` for `/v1beta/decisions`)."
+                ],
+                auth_mode: [
+                  type: {:in, [:bearer, :x_goog_api_key]},
+                  doc: "Authentication header mode (`:bearer` or `:x_goog_api_key`)."
+                ],
+                decisions_path: [
+                  type: :string,
+                  doc: "Optional custom endpoint path override for `:gemini_decisions`."
+                ],
                 base_url: [
                   type: :any,
-                  doc: "Optional default TypeSafe base URL."
+                  doc: "Optional default base URL."
                 ],
                 model: [
                   type: :any,
-                  doc: "Optional default System One model identifier."
+                  doc: "Optional default model identifier."
                 ],
                 max_concurrency: [
                   type: :pos_integer,
@@ -839,13 +861,14 @@ defmodule JevDSL do
   end
 
   defp maybe_quote_cache_key(mod) do
-    unless Module.defines?(mod, {:cache_key, 2}) do
+    unless Module.defines?(mod, {:cache_key, 2}) or Module.defines?(mod, {:cache_key, 3}) do
       quote do
         @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
-        @spec cache_key(atom() | String.t(), term()) :: String.t()
-        def cache_key(key, state), do: Cache.key(state, prepared(key))
+        @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
+        def cache_key(key, state, opts \\ []),
+          do: Runner.cache_key(__MODULE__, key, state, opts)
 
-        defoverridable cache_key: 2
+        defoverridable cache_key: 2, cache_key: 3
       end
     end
   end

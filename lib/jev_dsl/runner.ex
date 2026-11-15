@@ -54,6 +54,16 @@ defmodule JevDSL.Runner do
   ]
 
   @doc """
+  Computes the deterministic SHA-256 cache key (`"jev_<sha256>"`) for `contract_key` and `state`,
+  merging module-level, `otp_app` runtime, and per-call options.
+  """
+  @spec cache_key(module(), atom() | String.t(), term(), keyword()) :: String.t()
+  def cache_key(contract_mod, contract_key, state, opts \\ []) do
+    merged = merge_module_opts(contract_mod, opts)
+    Cache.key(state, contract_mod.prepared(contract_key), merged)
+  end
+
+  @doc """
   Returns `true` if the contract module can execute evaluations — either via an injected
   1-arity test function (`:eval_fn` or `:eval_fn_key`), an explicit `%SystemOneSDK.Client{}` (`:client`),
   a configured `TYPESAFE_API_KEY`, or an enabled Tier-2 cache (`:tier2_cache`).
@@ -184,23 +194,44 @@ defmodule JevDSL.Runner do
   end
 
   @doc """
-  Resolves the trimmed `TYPESAFE_API_KEY` from `opts`, application config, or environment.
+  Resolves the trimmed API key from `opts`, application config, or environment.
   """
   @spec api_key(keyword()) :: String.t()
   def api_key(opts \\ []) do
     otp_app = Keyword.get(opts, :otp_app)
 
     raw =
-      Keyword.get(opts, :typesafe_api_key) ||
-        Keyword.get(opts, :api_key) ||
-        (otp_app && Application.get_env(otp_app, :typesafe_api_key)) ||
-        Application.get_env(:system_one_sdk, :api_key) ||
-        Application.get_env(:typesafe_api_sdk, :api_key) ||
-        System.get_env("TYPESAFE_API_KEY") ||
-        ""
+      case Keyword.get(opts, :backend, :system_one) do
+        :gemini_decisions -> gemini_api_key(opts, otp_app)
+        _ -> system_one_api_key(opts, otp_app)
+      end
 
-    String.trim(to_string(raw))
+    String.trim(to_string(raw || ""))
   end
+
+  defp gemini_api_key(opts, otp_app) do
+    first_present([
+      fn -> Keyword.get(opts, :gemini_api_key) end,
+      fn -> Keyword.get(opts, :api_key) end,
+      fn -> otp_app && Application.get_env(otp_app, :gemini_api_key) end,
+      fn -> otp_app && Application.get_env(otp_app, :api_key) end,
+      fn -> System.get_env("LITELLM_API_KEY") end,
+      fn -> System.get_env("GEMINI_API_KEY") end
+    ])
+  end
+
+  defp system_one_api_key(opts, otp_app) do
+    first_present([
+      fn -> Keyword.get(opts, :typesafe_api_key) end,
+      fn -> Keyword.get(opts, :api_key) end,
+      fn -> otp_app && Application.get_env(otp_app, :typesafe_api_key) end,
+      fn -> Application.get_env(:system_one_sdk, :api_key) end,
+      fn -> Application.get_env(:typesafe_api_sdk, :api_key) end,
+      fn -> System.get_env("TYPESAFE_API_KEY") end
+    ])
+  end
+
+  defp first_present(funs), do: Enum.find_value(funs, & &1.())
 
   @doc """
   Returns `true` if a non-empty `TYPESAFE_API_KEY` is available.
@@ -276,15 +307,33 @@ defmodule JevDSL.Runner do
 
       _ ->
         if not cache_only? and has_api_key?(opts) do
-          client_opts =
-            opts
-            |> Keyword.take(@client_sdk_options)
-            |> Keyword.put(:api_key, api_key(opts))
-
-          SystemOneSDK.new_client(client_opts)
+          build_provider_client(opts)
         else
           nil
         end
+    end
+  end
+
+  defp build_provider_client(opts) do
+    case Keyword.get(opts, :backend, :system_one) do
+      :gemini_decisions ->
+        provider_opts =
+          opts
+          |> Keyword.take(@client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path])
+          |> Keyword.put(:api_key, api_key(opts))
+
+        SystemOneSDK.new_client(
+          provider: JevDSL.Providers.GeminiDecisions,
+          provider_opts: provider_opts
+        )
+
+      _ ->
+        client_opts =
+          opts
+          |> Keyword.take(@client_sdk_options)
+          |> Keyword.put(:api_key, api_key(opts))
+
+        SystemOneSDK.new_client(client_opts)
     end
   end
 
@@ -315,7 +364,7 @@ defmodule JevDSL.Runner do
   end
 
   defp evaluate_single_cached(contract_key, client, state, prep, opts) do
-    hash_key = Cache.key(state, prep)
+    hash_key = Cache.key(state, prep, opts)
     ctx = build_cache_ctx(contract_key, opts)
 
     case Cache.adapter_get(ctx.l1, hash_key, ctx.l1_opts) do
@@ -423,7 +472,7 @@ defmodule JevDSL.Runner do
     indexed_states =
       states
       |> Enum.with_index()
-      |> Enum.map(fn {st, idx} -> {idx, st, Cache.key(st, prep)} end)
+      |> Enum.map(fn {st, idx} -> {idx, st, Cache.key(st, prep, opts)} end)
 
     {cached_map, misses, l1_backfills} = partition_many_cache(indexed_states, ctx)
 

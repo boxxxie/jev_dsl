@@ -5,7 +5,7 @@ defmodule JevDSL.Error do
 
   ## Fields
 
-    * `:type` - Error classification atom (`:no_api_key`, `:cache_miss`, `:unknown_contract`, `:invalid_options`, or `:evaluation_failed`).
+    * `:type` - Error classification atom (`:no_api_key`, `:cache_miss`, `:unknown_contract`, `:invalid_options`, `:provider_error`, `:invalid_response`, or `:evaluation_failed`).
     * `:message` - Human-readable error message.
     * `:contract` - The contract key (atom or string) being evaluated, if applicable.
     * `:details` - Additional error context or underlying failure term.
@@ -16,6 +16,8 @@ defmodule JevDSL.Error do
           | :cache_miss
           | :unknown_contract
           | :invalid_options
+          | :provider_error
+          | :invalid_response
           | :evaluation_failed
 
   @type t :: %__MODULE__{
@@ -87,6 +89,9 @@ defmodule JevDSL.Error do
   Converts an error reason from `evaluate/3` into a raisable exception (`JevDSL.Error` or `SystemOneSDK.Error`).
   """
   @spec from_reason(term(), atom() | String.t() | nil) :: Exception.t()
+  def from_reason(%__MODULE__{contract: nil} = err, contract) when not is_nil(contract),
+    do: %{err | contract: contract}
+
   def from_reason(%__MODULE__{} = err, _contract), do: err
   def from_reason(%SystemOneSDK.Error{} = err, _contract), do: err
   def from_reason(:no_api_key, contract), do: no_api_key(contract)

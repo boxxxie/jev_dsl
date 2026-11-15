@@ -83,11 +83,25 @@ defmodule JevDSL.Cache do
   """
   @spec identity(term(), SystemOneSDK.Prepared.t() | String.t() | term(), keyword()) :: map()
   def identity(state, prepared, opts \\ []) do
-    %{
-      service: :system_one,
-      state: state,
-      fingerprint: extract_fingerprint(prepared, opts)
-    }
+    fp = extract_fingerprint(prepared, opts)
+
+    case Keyword.get(opts, :backend, :system_one) do
+      :gemini_decisions ->
+        %{
+          service: :gemini_decisions,
+          decisions_mode: Keyword.get(opts, :decisions_mode, :unified),
+          model: Keyword.get(opts, :model) || "gemini-decision-1",
+          state: state,
+          fingerprint: fp
+        }
+
+      _ ->
+        %{
+          service: :system_one,
+          state: state,
+          fingerprint: fp
+        }
+    end
   end
 
   defp extract_fingerprint(%SystemOneSDK.Prepared{fingerprint: fp}, _opts) when is_binary(fp),
