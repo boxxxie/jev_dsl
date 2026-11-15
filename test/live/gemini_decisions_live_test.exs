@@ -24,7 +24,8 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     defscore :clarity,
       ask: "Rate the clarity of the reproduction steps." do
       vague -> "Unclear"
-      clear -> "Clear"
+      partial -> "Partial"
+      clear -> "Clear and complete"
     end
 
     defjev :triage do
@@ -40,7 +41,8 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
       score :clarity, ask: "Rate clarity." do
         vague -> "Unclear"
-        clear -> "Clear"
+        partial -> "Partial"
+        clear -> "Clear and complete"
       end
     end
   end
@@ -67,7 +69,8 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     defscore :clarity,
       ask: "Rate the clarity of the reproduction steps." do
       vague -> "Unclear"
-      clear -> "Clear"
+      partial -> "Partial"
+      clear -> "Clear and complete"
     end
 
     defjev :triage do
@@ -83,7 +86,8 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
       score :clarity, ask: "Rate clarity." do
         vague -> "Unclear"
-        clear -> "Clear"
+        partial -> "Partial"
+        clear -> "Clear and complete"
       end
     end
   end
@@ -99,6 +103,19 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
     assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(resp, :is_spam)
     assert is_number(prob)
+    assert prob > 0.8
+
+    assert {:ok, neg_resp} =
+             LiveUnifiedContracts.evaluate(
+               :is_spam,
+               %{body: "Hi, could you please help reset my account password?"},
+               base_url: base_url,
+               cache?: false
+             )
+
+    assert {:ok, %{noul: neg_prob}} = JevDSL.fetch_answer(neg_resp, :is_spam)
+    assert is_number(neg_prob)
+    assert neg_prob < 0.2
 
     assert {:ok, choice_resp} =
              LiveUnifiedContracts.evaluate(:sentiment, %{body: "Thanks for the great fix!"},
@@ -112,13 +129,15 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     assert {:ok, score_resp} =
              LiveUnifiedContracts.evaluate(
                :clarity,
-               %{body: "1. Run mix test. 2. See 200 OK."},
+               %{body: "1. Open app. 2. Click save. 3. Observe 500 error with full stacktrace."},
                base_url: base_url,
                cache?: false
              )
 
     assert {:ok, clarity} = JevDSL.fetch_answer(score_resp, :clarity)
     assert is_number(clarity.score)
+    assert clarity.score > 1.0 and clarity.score <= 2.0
+    assert clarity.level in [1, 2]
     assert is_binary(clarity.label)
 
     assert {:ok, jev_resp} =
@@ -131,10 +150,13 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
     assert {:ok, %{noul: urgent_prob}} = JevDSL.fetch_answer(jev_resp, :urgent)
     assert is_number(urgent_prob)
+    assert urgent_prob > 0.8
     assert {:ok, prio} = JevDSL.fetch_answer(jev_resp, :priority)
     assert JevDSL.choice?(prio, :p0)
     assert {:ok, jev_clarity} = JevDSL.fetch_answer(jev_resp, :clarity)
     assert is_number(jev_clarity.score)
+    assert jev_clarity.score >= 0.0 and jev_clarity.score <= 2.0
+    assert jev_clarity.level in 0..2
   end
 
   test "evaluates noul, choice, score, and defjev on gemini-decision-1 via native /gemini/v1beta/decisions passthrough" do
@@ -148,6 +170,19 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
     assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(resp, :is_spam)
     assert is_number(prob)
+    assert prob > 0.8
+
+    assert {:ok, neg_resp} =
+             LiveNativeContracts.evaluate(
+               :is_spam,
+               %{body: "Hi, could you please help reset my account password?"},
+               base_url: base_url,
+               cache?: false
+             )
+
+    assert {:ok, %{noul: neg_prob}} = JevDSL.fetch_answer(neg_resp, :is_spam)
+    assert is_number(neg_prob)
+    assert neg_prob < 0.2
 
     assert {:ok, choice_resp} =
              LiveNativeContracts.evaluate(:sentiment, %{body: "Thanks for the great fix!"},
@@ -161,13 +196,15 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     assert {:ok, score_resp} =
              LiveNativeContracts.evaluate(
                :clarity,
-               %{body: "1. Run mix test. 2. See 200 OK."},
+               %{body: "1. Open app. 2. Click save. 3. Observe 500 error with full stacktrace."},
                base_url: base_url,
                cache?: false
              )
 
     assert {:ok, clarity} = JevDSL.fetch_answer(score_resp, :clarity)
     assert is_number(clarity.score)
+    assert clarity.score > 1.0 and clarity.score <= 2.0
+    assert clarity.level in [1, 2]
     assert is_binary(clarity.label)
 
     assert {:ok, jev_resp} =
@@ -180,9 +217,12 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
     assert {:ok, %{noul: urgent_prob}} = JevDSL.fetch_answer(jev_resp, :urgent)
     assert is_number(urgent_prob)
+    assert urgent_prob > 0.8
     assert {:ok, prio} = JevDSL.fetch_answer(jev_resp, :priority)
     assert JevDSL.choice?(prio, :p0)
     assert {:ok, jev_clarity} = JevDSL.fetch_answer(jev_resp, :clarity)
     assert is_number(jev_clarity.score)
+    assert jev_clarity.score >= 0.0 and jev_clarity.score <= 2.0
+    assert jev_clarity.level in 0..2
   end
 end
