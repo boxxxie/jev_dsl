@@ -192,27 +192,36 @@ defmodule JevDSL.Runner do
 
     raw =
       case Keyword.get(opts, :backend, :system_one) do
-        :gemini_decisions ->
-          Keyword.get(opts, :gemini_api_key) ||
-            Keyword.get(opts, :api_key) ||
-            (otp_app && Application.get_env(otp_app, :gemini_api_key)) ||
-            (otp_app && Application.get_env(otp_app, :api_key)) ||
-            System.get_env("LITELLM_API_KEY") ||
-            System.get_env("GEMINI_API_KEY") ||
-            ""
-
-        _ ->
-          Keyword.get(opts, :typesafe_api_key) ||
-            Keyword.get(opts, :api_key) ||
-            (otp_app && Application.get_env(otp_app, :typesafe_api_key)) ||
-            Application.get_env(:system_one_sdk, :api_key) ||
-            Application.get_env(:typesafe_api_sdk, :api_key) ||
-            System.get_env("TYPESAFE_API_KEY") ||
-            ""
+        :gemini_decisions -> gemini_api_key(opts, otp_app)
+        _ -> system_one_api_key(opts, otp_app)
       end
 
-    String.trim(to_string(raw))
+    String.trim(to_string(raw || ""))
   end
+
+  defp gemini_api_key(opts, otp_app) do
+    first_present([
+      fn -> Keyword.get(opts, :gemini_api_key) end,
+      fn -> Keyword.get(opts, :api_key) end,
+      fn -> otp_app && Application.get_env(otp_app, :gemini_api_key) end,
+      fn -> otp_app && Application.get_env(otp_app, :api_key) end,
+      fn -> System.get_env("LITELLM_API_KEY") end,
+      fn -> System.get_env("GEMINI_API_KEY") end
+    ])
+  end
+
+  defp system_one_api_key(opts, otp_app) do
+    first_present([
+      fn -> Keyword.get(opts, :typesafe_api_key) end,
+      fn -> Keyword.get(opts, :api_key) end,
+      fn -> otp_app && Application.get_env(otp_app, :typesafe_api_key) end,
+      fn -> Application.get_env(:system_one_sdk, :api_key) end,
+      fn -> Application.get_env(:typesafe_api_sdk, :api_key) end,
+      fn -> System.get_env("TYPESAFE_API_KEY") end
+    ])
+  end
+
+  defp first_present(funs), do: Enum.find_value(funs, & &1.())
 
   @doc """
   Returns `true` if a non-empty `TYPESAFE_API_KEY` is available.

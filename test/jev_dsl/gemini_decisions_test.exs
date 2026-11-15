@@ -101,13 +101,35 @@ defmodule JevDSL.GeminiDecisionsTest do
       prep_nat = GeminiNativeContract.prepared(:is_spam)
 
       key_sys = JevDSL.Cache.key(state, prep_sys)
-      key_uni = JevDSL.Cache.key(state, prep_uni, backend: :gemini_decisions, decisions_mode: :unified, model: "gemini-decision-1")
-      key_nat = JevDSL.Cache.key(state, prep_nat, backend: :gemini_decisions, decisions_mode: :native, model: "gemini-decision-1")
-      key_other_model = JevDSL.Cache.key(state, prep_uni, backend: :gemini_decisions, decisions_mode: :unified, model: "gemini-decision-2")
+
+      key_uni =
+        JevDSL.Cache.key(state, prep_uni,
+          backend: :gemini_decisions,
+          decisions_mode: :unified,
+          model: "gemini-decision-1"
+        )
+
+      key_nat =
+        JevDSL.Cache.key(state, prep_nat,
+          backend: :gemini_decisions,
+          decisions_mode: :native,
+          model: "gemini-decision-1"
+        )
+
+      key_other_model =
+        JevDSL.Cache.key(state, prep_uni,
+          backend: :gemini_decisions,
+          decisions_mode: :unified,
+          model: "gemini-decision-2"
+        )
 
       assert length(Enum.uniq([key_sys, key_uni, key_nat, key_other_model])) == 4
-      assert GeminiUnifiedContract.cache_key(:is_spam, state) != SystemOneContract.cache_key(:is_spam, state)
-      assert GeminiUnifiedContract.cache_key(:is_spam, state) != GeminiNativeContract.cache_key(:is_spam, state)
+
+      assert GeminiUnifiedContract.cache_key(:is_spam, state) !=
+               SystemOneContract.cache_key(:is_spam, state)
+
+      assert GeminiUnifiedContract.cache_key(:is_spam, state) !=
+               GeminiNativeContract.cache_key(:is_spam, state)
     end
 
     test "recognizes gemini_api_key and api_key for :gemini_decisions" do
