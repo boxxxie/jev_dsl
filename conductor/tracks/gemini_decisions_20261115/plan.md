@@ -19,10 +19,10 @@
 - [x] Task: Conductor - User Manual Verification 'Gemini Decisions Wire Protocol & Response Normalization' (Protocol in workflow.md)
 
 ## Phase 3: Runner Integration, Caching, Batching & Docs
-- [~] Task: Integrate Gemini Decisions adapter into `JevDSL.Runner` (`evaluate/3`, `evaluate!/3`, `evaluate_many/3`)
-    - [~] Write Tests: Write 4-layer ATDD executable specifications (Layer 1 domain specs + Layer 2 DSL + Layer 3 stubbed HTTP/cache drivers, `async: true`) covering single evaluation, concurrent `evaluate_many/3`, L1/L2 cache hits/backfill, `cache_only: true`, and `:telemetry` events
-    - [ ] Implement: Wire the Gemini Decisions adapter into `JevDSL.Runner` execution and batching pipeline
-- [ ] Task: Add tagged live smoke test and update documentation
-    - [ ] Write Tests: Add an excluded-by-default `@tag :live` smoke test for `gemini-decision-1` (unified and native passthrough)
-    - [ ] Implement: Update `README.md`, `usage-rules.md`, and `@moduledoc`/`@doc` examples; run `mix precommit` and verify >80% coverage
-- [ ] Task: Conductor - User Manual Verification 'Runner Integration, Caching, Batching & Docs' (Protocol in workflow.md)
+- [x] Task: Integrate Gemini Decisions adapter into `JevDSL.Runner` (`evaluate/3`, `evaluate!/3`, `evaluate_many/3`) 51a5efa
+    - [x] Write Tests: Write 4-layer ATDD executable specifications (Layer 1 domain specs + Layer 2 DSL + Layer 3 stubbed HTTP/cache drivers, `async: true`) covering single evaluation, concurrent `evaluate_many/3`, L1/L2 cache hits/backfill, `cache_only: true`, and `:telemetry` events
+    - [x] Implement: Wire the Gemini Decisions adapter into `JevDSL.Runner` execution and batching pipeline
+- [x] Task: Add tagged live smoke test and update documentation 699e63c
+    - [x] Write Tests: Add an excluded-by-default `@tag :live` smoke test for `gemini-decision-1` (unified and native passthrough)
+    - [x] Implement: Update `README.md`, `usage-rules.md`, and `@moduledoc`/`@doc` examples; run `mix precommit` and verify >80% coverage
+- [x] Task: Conductor - User Manual Verification 'Runner Integration, Caching, Batching & Docs' (Protocol in workflow.md)
