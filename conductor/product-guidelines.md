@@ -12,5 +12,6 @@
 - **Clear Error Diagnostics:** Actionable error messages that name the contract, field, and expected shape.
 
 ## Quality & Reliability Standards
-- **Deterministic Testing:** Support offline/stubbed testing without live network calls by default; isolate live integration tests behind ExUnit tags.
+- **4-Layer ATDD & Property-Based Testing:** Separate domain intent from wire/transport mechanics using 4-layer ATDD executable specifications for behavioral workflows, and use direct unit tests + `stream_data` (`ExUnitProperties`) invariants for codecs, schemas, and adapters.
+- **Deterministic Testing:** Support offline/stubbed testing without live network calls by default (`async: true`); isolate live integration tests behind ExUnit tags (e.g., `@moduletag :live`).
 - **Strict Static Checks:** Maintain clean `mix format`, `mix compile --warnings-as-errors`, `mix credo --strict`, and Dialyzer compliance (`mix precommit`).

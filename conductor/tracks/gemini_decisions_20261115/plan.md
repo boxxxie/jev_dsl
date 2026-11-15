@@ -20,7 +20,7 @@
 
 ## Phase 3: Runner Integration, Caching, Batching & Docs
 - [ ] Task: Integrate Gemini Decisions adapter into `JevDSL.Runner` (`evaluate/3`, `evaluate!/3`, `evaluate_many/3`)
-    - [ ] Write Tests: Write integration tests using stubbed HTTP transport for single evaluation, concurrent `evaluate_many/3`, L1/L2 cache hits/backfill, `cache_only: true`, and `:telemetry` events
+    - [ ] Write Tests: Write 4-layer ATDD executable specifications (Layer 1 domain specs + Layer 2 DSL + Layer 3 stubbed HTTP/cache drivers, `async: true`) covering single evaluation, concurrent `evaluate_many/3`, L1/L2 cache hits/backfill, `cache_only: true`, and `:telemetry` events
     - [ ] Implement: Wire the Gemini Decisions adapter into `JevDSL.Runner` execution and batching pipeline
 - [ ] Task: Add tagged live smoke test and update documentation
     - [ ] Write Tests: Add an excluded-by-default `@tag :live` smoke test for `gemini-decision-1` (unified and native passthrough)

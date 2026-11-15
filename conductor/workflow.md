@@ -4,7 +4,10 @@
 
 1. **The Plan is the Source of Truth:** All work must be tracked in `plan.md`
 2. **The Tech Stack is Deliberate:** Changes to the tech stack must be documented in `tech-stack.md` *before* implementation
-3. **Test-Driven Development:** Write unit tests before implementing functionality
+3. **4-Layer ATDD & Red-First Test-Driven Development:**
+   - **Behavioral & Workflow Specs:** Use the 4-layer ATDD Executable Specifications architecture (Layer 1: Executable Specifications in domain vocabulary, Layer 2: Domain-Specific Language, Layer 3: Protocol Drivers, Layer 4: System Under Test) for end-to-end evaluation, caching, and batching workflows. Keep Layer 1 free of HTTP/wire/ETS mechanics and ban zero-argument "DSL theater".
+   - **Low-Level Infrastructure & Codecs:** Keep option schemas, wire payload encoders, response normalizers, and cache adapters as direct unit tests (Pattern E) paired with `ExUnitProperties` (`stream_data`) property-based invariants (Pattern D).
+   - **Parallel-Safe by Default:** Run tests with `async: true` unless mutating process- or OS-global state.
 4. **High Code Coverage:** Aim for >80% code coverage for all modules
 5. **User Experience First:** Every decision should prioritize user experience
 6. **Non-Interactive & CI-Aware:** Prefer non-interactive commands. Use `CI=true` for watch-mode tools (tests, linters) to ensure single execution.
@@ -20,9 +23,8 @@ All tasks follow a strict lifecycle:
 2. **Mark In Progress:** Before beginning work, edit `plan.md` and change the task from `[ ]` to `[~]`
 
 3. **Write Failing Tests (Red Phase):**
-   - Create a new test file for the feature or bug fix.
-   - Write one or more unit tests that clearly define the expected behavior and acceptance criteria for the task.
-   - **CRITICAL:** Run the tests and confirm that they fail as expected. This is the "Red" phase of TDD. Do not proceed until you have failing tests.
+   - For behavioral workflows, write a Layer 1 executable specification (driving Layer 2 DSL / Layer 3 protocol drivers); for low-level codecs, parsers, or option schemas, write direct unit tests + `stream_data` property invariants.
+   - Run the targeted test(s) (`mix test path/to/test.exs:LINE`) and confirm they fail as expected. This is the "Red" phase of TDD/ATDD. Do not proceed until you have failing tests.
 
 4. **Implement to Pass Tests (Green Phase):**
    - Write the minimum amount of application code necessary to make the failing tests pass.
