@@ -865,7 +865,7 @@ defmodule JevDSL do
       quote do
         @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
         @spec cache_key(atom() | String.t(), term()) :: String.t()
-        def cache_key(key, state), do: Cache.key(state, prepared(key))
+        def cache_key(key, state), do: Cache.key(state, prepared(key), __jev_dsl_opts__())
 
         defoverridable cache_key: 2
       end

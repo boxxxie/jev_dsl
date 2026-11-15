@@ -59,4 +59,64 @@ defmodule JevDSL.GeminiDecisionsTest do
       end
     end
   end
+
+  describe "cache key isolation and backend availability" do
+    defmodule GeminiUnifiedContract do
+      use JevDSL,
+        otp_app: :jev_dsl,
+        backend: :gemini_decisions,
+        decisions_mode: :unified,
+        model: "gemini-decision-1"
+
+      defnoul :is_spam do
+        "Is this spam?"
+      end
+    end
+
+    defmodule GeminiNativeContract do
+      use JevDSL,
+        otp_app: :jev_dsl,
+        backend: :gemini_decisions,
+        decisions_mode: :native,
+        model: "gemini-decision-1"
+
+      defnoul :is_spam do
+        "Is this spam?"
+      end
+    end
+
+    defmodule SystemOneContract do
+      use JevDSL,
+        otp_app: :jev_dsl
+
+      defnoul :is_spam do
+        "Is this spam?"
+      end
+    end
+
+    test "isolates cache keys across :system_one, :unified, :native, and model overrides" do
+      state = %{body: "hello"}
+      prep_sys = SystemOneContract.prepared(:is_spam)
+      prep_uni = GeminiUnifiedContract.prepared(:is_spam)
+      prep_nat = GeminiNativeContract.prepared(:is_spam)
+
+      key_sys = JevDSL.Cache.key(state, prep_sys)
+      key_uni = JevDSL.Cache.key(state, prep_uni, backend: :gemini_decisions, decisions_mode: :unified, model: "gemini-decision-1")
+      key_nat = JevDSL.Cache.key(state, prep_nat, backend: :gemini_decisions, decisions_mode: :native, model: "gemini-decision-1")
+      key_other_model = JevDSL.Cache.key(state, prep_uni, backend: :gemini_decisions, decisions_mode: :unified, model: "gemini-decision-2")
+
+      assert length(Enum.uniq([key_sys, key_uni, key_nat, key_other_model])) == 4
+      assert GeminiUnifiedContract.cache_key(:is_spam, state) != SystemOneContract.cache_key(:is_spam, state)
+      assert GeminiUnifiedContract.cache_key(:is_spam, state) != GeminiNativeContract.cache_key(:is_spam, state)
+    end
+
+    test "recognizes gemini_api_key and api_key for :gemini_decisions" do
+      assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: "gk-123") ==
+               "gk-123"
+
+      assert JevDSL.Runner.api_key(backend: :gemini_decisions, api_key: "gk-456") == "gk-456"
+      assert GeminiUnifiedContract.available?(gemini_api_key: "gk-123")
+      assert GeminiNativeContract.available?(api_key: "gk-456")
+    end
+  end
 end
