@@ -215,8 +215,10 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
 
   defp normalize_answers(raw_answers, %Prepared{} = prepared) do
     Enum.reduce_while(prepared.ordered_keys, {:ok, %{}}, fn caller_key, {:ok, acc} ->
+      wire_key = to_string(caller_key)
+
       case normalize_one_answer(caller_key, raw_answers, prepared) do
-        {:ok, ans} -> {:cont, {:ok, Map.put(acc, caller_key, ans)}}
+        {:ok, ans} -> {:cont, {:ok, Map.put(acc, wire_key, ans)}}
         {:error, _} = err -> {:halt, err}
       end
     end)
@@ -256,14 +258,13 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   end
 
   defp normalize_question_answer(caller_key, %{type: "choice"} = defn, raw_ans) do
-    option_keys = Map.get(defn, :option_keys, %{})
     option_order = Map.get(defn, :option_order, [])
     choice_raw = raw_ans["choice"]
-    choice_key = Map.get(option_keys, to_string(choice_raw), choice_raw)
-    probs = normalize_probabilities(raw_ans["probabilities"] || %{}, option_keys)
-    conf = raw_ans["confidence"] || Map.get(probs, choice_key, 1.0)
+    choice_str = if is_nil(choice_raw), do: nil, else: to_string(choice_raw)
+    probs = normalize_probabilities(raw_ans["probabilities"] || %{})
+    conf = raw_ans["confidence"] || Map.get(probs, choice_str, 1.0)
 
-    if is_nil(choice_raw) do
+    if is_nil(choice_str) do
       {:error,
        %Error{
          type: :invalid_response,
@@ -273,7 +274,7 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
     else
       {:ok,
        %ChoiceAnswer{
-         choice: choice_key,
+         choice: choice_str,
          confidence: conf,
          probabilities: probs,
          id: caller_key,
@@ -285,9 +286,8 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
 
   defp normalize_question_answer(caller_key, %{type: "score"} = defn, raw_ans) do
     levels = Map.get(defn, :levels, [])
-    level_keys = Map.new(levels, fn lvl -> {lvl.label, lvl.label} end)
     legend = Map.new(levels, fn lvl -> {lvl.index, lvl.label} end)
-    probs = normalize_probabilities(raw_ans["probabilities"] || %{}, level_keys)
+    probs = normalize_probabilities(raw_ans["probabilities"] || %{})
     score = raw_ans["score"]
     conf = raw_ans["confidence"] || 1.0
 
@@ -312,11 +312,9 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
     end
   end
 
-  defp normalize_probabilities(probs, key_map) when is_map(probs) do
-    Map.new(probs, fn {k, v} ->
-      {Map.get(key_map, to_string(k), k), v}
-    end)
+  defp normalize_probabilities(probs) when is_map(probs) do
+    Map.new(probs, fn {k, v} -> {to_string(k), v} end)
   end
 
-  defp normalize_probabilities(_, _), do: %{}
+  defp normalize_probabilities(_), do: %{}
 end

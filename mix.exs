@@ -9,6 +9,7 @@ defmodule JevDSL.MixProject do
       app: :jev_dsl,
       version: @version,
       elixir: "~> 1.18",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
@@ -29,6 +30,9 @@ defmodule JevDSL.MixProject do
       extra_applications: [:logger, :crypto]
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def cli do
     [

@@ -297,15 +297,33 @@ defmodule JevDSL.Runner do
 
       _ ->
         if not cache_only? and has_api_key?(opts) do
-          client_opts =
-            opts
-            |> Keyword.take(@client_sdk_options)
-            |> Keyword.put(:api_key, api_key(opts))
-
-          SystemOneSDK.new_client(client_opts)
+          build_provider_client(opts)
         else
           nil
         end
+    end
+  end
+
+  defp build_provider_client(opts) do
+    case Keyword.get(opts, :backend, :system_one) do
+      :gemini_decisions ->
+        provider_opts =
+          opts
+          |> Keyword.take(@client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path])
+          |> Keyword.put(:api_key, api_key(opts))
+
+        SystemOneSDK.new_client(
+          provider: JevDSL.Providers.GeminiDecisions,
+          provider_opts: provider_opts
+        )
+
+      _ ->
+        client_opts =
+          opts
+          |> Keyword.take(@client_sdk_options)
+          |> Keyword.put(:api_key, api_key(opts))
+
+        SystemOneSDK.new_client(client_opts)
     end
   end
 

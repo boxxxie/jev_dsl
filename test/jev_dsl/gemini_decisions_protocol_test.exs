@@ -178,7 +178,8 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert resp.model == "gemini-decision-1"
       assert resp.usage.input_tokens == 94
       assert resp.usage.output_tokens == 0
-      assert resp.answers.priority.choice == :p2
+      assert {:ok, prio} = JevDSL.fetch_answer(resp, :priority)
+      assert JevDSL.choice?(prio, :p2)
       assert JevDSL.Cache.resolve_ttl({:ok, resp}, min_confidence: 0.65) == {:ok, 300}
     end
 
