@@ -114,9 +114,8 @@ All tasks follow a strict lifecycle:
         3.  **Confirm that you receive:** A JSON response with a status of `201 Created`.
         ```
 
-5.  **Await Explicit User Feedback:**
-    -   After presenting the detailed plan, ask the user for confirmation: "**Does this meet your expectations? Please confirm with yes or provide feedback on what needs to be changed.**"
-    -   **PAUSE** and await the user's response. Do not proceed without an explicit yes or confirmation.
+5.  **Defer Manual Verification to End of Track:**
+    -   Proceed directly to the next phase after automated tests (`mix precommit`) pass; present a single consolidated manual verification summary when the track is complete.
 
 6.  **Create Checkpoint Commit:**
     -   Stage all changes. If no changes occurred in this step, proceed with an empty commit.
