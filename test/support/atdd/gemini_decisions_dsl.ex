@@ -6,8 +6,17 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
   alias JevDSL.ATDD.GeminiDecisionsDriver, as: Driver
 
   def given_decision_backend(contract_mod, opts \\ []) do
-    {l1, l2} = Driver.unique_ets_tables()
+    {default_l1, default_l2} =
+      if Keyword.has_key?(opts, :l1_table) and Keyword.has_key?(opts, :l2_table) do
+        {Keyword.fetch!(opts, :l1_table), Keyword.fetch!(opts, :l2_table)}
+      else
+        Driver.unique_ets_tables()
+      end
+
+    l1 = Keyword.get(opts, :l1_table, default_l1)
+    l2 = Keyword.get(opts, :l2_table, default_l2)
     mode = Keyword.get(opts, :decisions_mode, :unified)
+    model = Keyword.get(opts, :model, "gemini-decision-1")
 
     auth_mode =
       Keyword.get(opts, :auth_mode, if(mode == :native, do: :x_goog_api_key, else: :bearer))
@@ -16,6 +25,7 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
       contract_mod: contract_mod,
       mode: mode,
       auth_mode: auth_mode,
+      model: model,
       l1_table: l1,
       l2_table: l2,
       stub_pid: nil,
@@ -28,6 +38,27 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
   def given_stubbed_responder(ctx, responder) when is_function(responder, 1) do
     pid = Driver.start_stub(responder)
     %{ctx | stub_pid: pid}
+  end
+
+  def when_switching_backend_mode(ctx, mode) when mode in [:unified, :native] do
+    when_switching_backend_mode(ctx, decisions_mode: mode)
+  end
+
+  def when_switching_backend_mode(ctx, opts) when is_list(opts) do
+    mode = Keyword.get(opts, :decisions_mode, ctx.mode)
+
+    auth_mode =
+      Keyword.get(
+        opts,
+        :auth_mode,
+        if(mode != ctx.mode,
+          do: if(mode == :native, do: :x_goog_api_key, else: :bearer),
+          else: ctx.auth_mode
+        )
+      )
+
+    model = Keyword.get(opts, :model, ctx.model)
+    %{ctx | mode: mode, auth_mode: auth_mode, model: model}
   end
 
   def when_evaluating(ctx, contract_key, state, extra_opts \\ []) do
@@ -91,6 +122,18 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
     ctx
   end
 
+  def then_error_is(ctx, expected_type) do
+    assert {:error, %JevDSL.Error{type: ^expected_type}} = ctx.last_result
+    ctx
+  end
+
+  def then_noul_below(ctx, question_key, max_prob) do
+    assert {:ok, response} = ctx.last_result
+    assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(response, question_key)
+    assert prob < max_prob
+    ctx
+  end
+
   def then_network_calls(ctx, expected_count) do
     assert Driver.request_count(ctx.stub_pid) == expected_count
     ctx
@@ -114,7 +157,7 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
       auth_mode: ctx.auth_mode,
       gemini_api_key: "test-gemini-key",
       base_url: "https://decisions.test.invalid",
-      model: "gemini-decision-1",
+      model: ctx.model,
       transport: Driver,
       transport_opts: [stub_pid: ctx.stub_pid],
       ets_table: ctx.l1_table,

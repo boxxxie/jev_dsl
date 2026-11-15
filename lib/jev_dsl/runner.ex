@@ -77,7 +77,7 @@ defmodule JevDSL.Runner do
       is_function(Keyword.get(merged, :eval_fn), 1) -> true
       is_function(Keyword.get(merged, :jev_eval_fn), 1) -> true
       has_client?(merged) -> true
-      has_api_key?(merged) -> true
+      can_build_provider_client?(merged) -> true
       Keyword.get(merged, :use_tier2_cache, true) and has_tier2_cache?(merged) -> true
       true -> false
     end
@@ -206,35 +206,98 @@ defmodule JevDSL.Runner do
         _ -> system_one_api_key(opts, otp_app)
       end
 
-    String.trim(to_string(raw || ""))
+    resolve_secret(raw) || ""
+  end
+
+  @doc false
+  def resolve_secret(nil), do: nil
+  def resolve_secret(str) when is_binary(str), do: String.trim(str)
+  def resolve_secret(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.trim()
+
+  def resolve_secret({:system, env_var}) when is_binary(env_var) do
+    resolve_secret(System.get_env(env_var))
+  end
+
+  def resolve_secret({:system, env_var, default}) when is_binary(env_var) do
+    resolve_secret(System.get_env(env_var) || default)
+  end
+
+  def resolve_secret(fun) when is_function(fun, 0), do: resolve_secret(fun.())
+
+  def resolve_secret({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args) do
+    apply(mod, fun, args) |> resolve_secret()
+  end
+
+  def resolve_secret(other) do
+    if String.Chars.impl_for(other) do
+      other |> to_string() |> String.trim()
+    else
+      ""
+    end
   end
 
   defp gemini_api_key(opts, otp_app) do
-    first_present([
-      fn -> Keyword.get(opts, :gemini_api_key) end,
-      fn -> Keyword.get(opts, :api_key) end,
-      fn -> otp_app && Application.get_env(otp_app, :gemini_api_key) end,
-      fn -> otp_app && Application.get_env(otp_app, :api_key) end,
-      fn -> System.get_env("LITELLM_API_KEY") end,
-      fn -> System.get_env("GEMINI_API_KEY") end
-    ])
+    resolve_key_candidates(
+      opts,
+      [:gemini_api_key, :api_key],
+      [
+        fn -> otp_app && Application.get_env(otp_app, :gemini_api_key) end,
+        fn -> otp_app && Application.get_env(otp_app, :api_key) end,
+        fn -> Application.get_env(:jev_dsl, :gemini_api_key) end,
+        fn -> Application.get_env(:jev_dsl, :api_key) end,
+        fn -> System.get_env("LITELLM_API_KEY") end,
+        fn -> System.get_env("GEMINI_API_KEY") end
+      ]
+    )
   end
 
   defp system_one_api_key(opts, otp_app) do
-    first_present([
-      fn -> Keyword.get(opts, :typesafe_api_key) end,
-      fn -> Keyword.get(opts, :api_key) end,
-      fn -> otp_app && Application.get_env(otp_app, :typesafe_api_key) end,
-      fn -> Application.get_env(:system_one_sdk, :api_key) end,
-      fn -> Application.get_env(:typesafe_api_sdk, :api_key) end,
-      fn -> System.get_env("TYPESAFE_API_KEY") end
-    ])
+    resolve_key_candidates(
+      opts,
+      [:typesafe_api_key, :api_key],
+      [
+        fn -> otp_app && Application.get_env(otp_app, :typesafe_api_key) end,
+        fn -> Application.get_env(:system_one_sdk, :api_key) end,
+        fn -> Application.get_env(:typesafe_api_sdk, :api_key) end,
+        fn -> System.get_env("TYPESAFE_API_KEY") end
+      ]
+    )
   end
 
-  defp first_present(funs), do: Enum.find_value(funs, & &1.())
+  defp resolve_key_candidates(opts, opt_keys, fallback_funs) do
+    opt_val = Enum.find_value(opt_keys, &non_blank_secret(Keyword.get(opts, &1)))
+
+    cond do
+      is_binary(opt_val) ->
+        opt_val
+
+      explicit_blank_opt?(opts, opt_keys) ->
+        ""
+
+      true ->
+        Enum.find_value(fallback_funs, fn fun -> non_blank_secret(fun.()) end)
+    end
+  end
+
+  defp explicit_blank_opt?(opts, keys) do
+    Enum.any?(keys, fn key ->
+      case Keyword.fetch(opts, key) do
+        {:ok, nil} -> true
+        {:ok, bin} when is_binary(bin) -> String.trim(bin) == ""
+        _ -> false
+      end
+    end)
+  end
+
+  defp non_blank_secret(raw) do
+    case resolve_secret(raw) do
+      val when is_binary(val) and val != "" -> val
+      _ -> nil
+    end
+  end
 
   @doc """
-  Returns `true` if a non-empty `TYPESAFE_API_KEY` is available.
+  Returns `true` if a non-empty API key is available.
   """
   @spec has_api_key?(keyword()) :: boolean()
   def has_api_key?(opts \\ []), do: api_key(opts) != ""
@@ -277,15 +340,143 @@ defmodule JevDSL.Runner do
     base_opts
     |> Keyword.merge(app_mod_opts)
     |> Keyword.merge(opts)
+    |> sync_client_opts(opts)
+  end
+
+  defp sync_client_opts(merged, opts) do
+    alias JevDSL.Providers.GeminiDecisions
+
+    case Keyword.get(merged, :client) do
+      %SystemOneSDK.Client{
+        provider: GeminiDecisions,
+        provider_client: %GeminiDecisions.Client{} = pclient
+      } = client ->
+        sync_gemini_client_opts(merged, opts, client, pclient)
+
+      %SystemOneSDK.Client{} ->
+        if Keyword.get(opts, :backend) == :gemini_decisions do
+          merged
+        else
+          Keyword.put(merged, :backend, :system_one)
+        end
+
+      _ ->
+        merged
+    end
+  end
+
+  defp sync_gemini_client_opts(merged, opts, client, pclient) do
+    alias JevDSL.Providers.GeminiDecisions
+
+    effective_mode =
+      Keyword.get(opts, :decisions_mode) ||
+        pclient.decisions_mode ||
+        Keyword.get(merged, :decisions_mode) ||
+        :unified
+
+    effective_auth = resolve_synced_auth_mode(opts, pclient, effective_mode, merged)
+
+    effective_model =
+      Keyword.get(opts, :model) ||
+        client.default_model ||
+        pclient.default_model ||
+        Keyword.get(merged, :model) ||
+        "gemini-decision-1"
+
+    effective_api_key = resolve_synced_api_key(opts, pclient)
+    effective_path = resolve_synced_decisions_path(opts, pclient, effective_mode, GeminiDecisions)
+
+    updated_pclient = %{
+      pclient
+      | decisions_mode: effective_mode,
+        auth_mode: effective_auth,
+        default_model: effective_model,
+        api_key: effective_api_key,
+        decisions_path: effective_path
+    }
+
+    updated_client = %{
+      client
+      | provider_client: updated_pclient,
+        default_model: effective_model,
+        api_key: effective_api_key
+    }
+
+    merged
+    |> Keyword.put(:backend, :gemini_decisions)
+    |> Keyword.put(:decisions_mode, effective_mode)
+    |> Keyword.put(:auth_mode, effective_auth)
+    |> Keyword.put(:model, effective_model)
+    |> Keyword.put(:client, updated_client)
+  end
+
+  defp resolve_synced_auth_mode(opts, pclient, effective_mode, merged) do
+    cond do
+      auth = Keyword.get(opts, :auth_mode) ->
+        auth
+
+      Keyword.get(opts, :decisions_mode) && effective_mode != pclient.decisions_mode ->
+        if effective_mode == :native, do: :x_goog_api_key, else: :bearer
+
+      pclient.auth_mode ->
+        pclient.auth_mode
+
+      true ->
+        Keyword.get(merged, :auth_mode) ||
+          if(effective_mode == :native, do: :x_goog_api_key, else: :bearer)
+    end
+  end
+
+  defp resolve_synced_api_key(opts, pclient) do
+    if Keyword.has_key?(opts, :api_key) or Keyword.has_key?(opts, :gemini_api_key) do
+      non_blank_secret(Keyword.get(opts, :api_key)) ||
+        non_blank_secret(Keyword.get(opts, :gemini_api_key))
+    else
+      resolve_secret(pclient.api_key)
+    end
+  end
+
+  defp resolve_synced_decisions_path(opts, pclient, effective_mode, gemini_mod) do
+    case Keyword.get(opts, :decisions_path) do
+      path when is_binary(path) and path != "" ->
+        path
+
+      _ when effective_mode != pclient.decisions_mode ->
+        gemini_mod.resolve_decisions_path(opts, effective_mode, pclient.base_url)
+
+      _ ->
+        pclient.decisions_path
+    end
   end
 
   defp can_run_or_tier2?(opts) do
     use_tier2? = Keyword.get(opts, :use_tier2_cache, true)
     cache_only? = Keyword.get(opts, :cache_only, false)
 
-    has_client?(opts) or has_api_key?(opts) or cache_only? or
+    has_client?(opts) or can_build_provider_client?(opts) or cache_only? or
       (use_tier2? and has_tier2_cache?(opts))
   end
+
+  defp can_build_provider_client?(opts) do
+    has_api_key?(opts) or keyless_gemini_decisions?(opts)
+  end
+
+  defp keyless_gemini_decisions?(opts) do
+    Keyword.get(opts, :backend) == :gemini_decisions and
+      (has_non_empty_headers?(Keyword.get(opts, :extra_headers)) or
+         has_non_empty_headers?(Keyword.get(opts, :headers)) or
+         has_non_blank_value?(Keyword.get(opts, :base_url)) or
+         not is_nil(Keyword.get(opts, :transport)) or
+         Keyword.has_key?(opts, :api_key) or
+         Keyword.has_key?(opts, :gemini_api_key))
+  end
+
+  defp has_non_empty_headers?(headers) when is_map(headers), do: map_size(headers) > 0
+  defp has_non_empty_headers?(headers) when is_list(headers), do: headers != []
+  defp has_non_empty_headers?(_), do: false
+
+  defp has_non_blank_value?(val) when is_binary(val), do: String.trim(val) != ""
+  defp has_non_blank_value?(_), do: false
 
   defp has_client?(opts) do
     match?(%SystemOneSDK.Client{}, Keyword.get(opts, :client))
@@ -306,7 +497,7 @@ defmodule JevDSL.Runner do
         client
 
       _ ->
-        if not cache_only? and has_api_key?(opts) do
+        if not cache_only? and can_build_provider_client?(opts) do
           build_provider_client(opts)
         else
           nil

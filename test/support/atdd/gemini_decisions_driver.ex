@@ -73,18 +73,36 @@ defmodule JevDSL.ATDD.GeminiDecisionsDriver do
       body: request.body
     }
 
-    case StubServer.record_and_respond(pid, normalized_req) do
-      {status, body_map} when is_integer(status) and is_map(body_map) ->
-        {:ok,
-         %Pristine.Core.Response{
-           status: status,
-           headers: %{"content-type" => "application/json"},
-           body: Jason.encode!(body_map)
-         }}
+    pid
+    |> StubServer.record_and_respond(normalized_req)
+    |> stub_response_to_core()
+  end
 
-      {:error, _} = err ->
-        err
-    end
+  defp stub_response_to_core({:error, _} = err), do: err
+
+  defp stub_response_to_core({status, body}) when is_integer(status) do
+    {:ok, build_core_response(status, body, nil)}
+  end
+
+  defp stub_response_to_core({status, body, headers})
+       when is_integer(status) and is_map(headers) do
+    {:ok, build_core_response(status, body, headers)}
+  end
+
+  defp build_core_response(status, body_map, headers) when is_map(body_map) do
+    %Pristine.Core.Response{
+      status: status,
+      headers: headers || %{"content-type" => "application/json"},
+      body: Jason.encode!(body_map)
+    }
+  end
+
+  defp build_core_response(status, body_bin, headers) when is_binary(body_bin) do
+    %Pristine.Core.Response{
+      status: status,
+      headers: headers || %{"content-type" => "text/plain"},
+      body: body_bin
+    }
   end
 
   def start_stub(responder) do

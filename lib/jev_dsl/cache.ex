@@ -85,11 +85,43 @@ defmodule JevDSL.Cache do
   def identity(state, prepared, opts \\ []) do
     fp = extract_fingerprint(prepared, opts)
 
+    case Keyword.get(opts, :client) do
+      %SystemOneSDK.Client{provider: JevDSL.Providers.GeminiDecisions, provider_client: pclient} =
+          client ->
+        gemini_client_identity(state, fp, client, pclient, opts)
+
+      %SystemOneSDK.Client{} ->
+        %{service: :system_one, state: state, fingerprint: fp}
+
+      _ ->
+        backend_identity(state, fp, opts)
+    end
+  end
+
+  defp gemini_client_identity(state, fp, client, pclient, opts) do
+    pclient_map = pclient || %{}
+
+    %{
+      service: :gemini_decisions,
+      decisions_mode:
+        Keyword.get(opts, :decisions_mode) || Map.get(pclient_map, :decisions_mode) || :unified,
+      model: resolve_client_model(opts, client, pclient_map),
+      state: state,
+      fingerprint: fp
+    }
+  end
+
+  defp resolve_client_model(opts, client, pclient_map) do
+    Keyword.get(opts, :model) || client.default_model || Map.get(pclient_map, :default_model) ||
+      "gemini-decision-1"
+  end
+
+  defp backend_identity(state, fp, opts) do
     case Keyword.get(opts, :backend, :system_one) do
       :gemini_decisions ->
         %{
           service: :gemini_decisions,
-          decisions_mode: Keyword.get(opts, :decisions_mode, :unified),
+          decisions_mode: Keyword.get(opts, :decisions_mode) || :unified,
           model: Keyword.get(opts, :model) || "gemini-decision-1",
           state: state,
           fingerprint: fp
