@@ -113,4 +113,95 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
              }
     end
   end
+
+  describe "response decoding and normalization" do
+    test "decodes unified /v1/decisions multi-question response into SystemOneResponse with atom keys" do
+      prep = SampleContracts.prepared(:triage)
+
+      body = %{
+        "model" => "gemini/gemini-decision-1",
+        "answers" => [
+          %{"name" => "urgent", "type" => "predicate", "probability" => 0.99},
+          %{
+            "name" => "priority",
+            "type" => "choice",
+            "choice" => "p0",
+            "confidence" => 0.95,
+            "probabilities" => %{"p0" => 0.95, "p2" => 0.05}
+          },
+          %{
+            "name" => "clarity",
+            "type" => "score",
+            "score" => 0.91,
+            "confidence" => 0.88,
+            "probabilities" => %{"vague" => 0.09, "clear" => 0.91}
+          }
+        ],
+        "usage" => %{"input_tokens" => 93, "output_tokens" => 0}
+      }
+
+      assert {:ok, resp} = Protocol.decode_response(body, prep, "gemini-decision-1")
+      assert resp.model == "gemini/gemini-decision-1"
+      assert resp.usage.input_tokens == 93
+      assert resp.usage.output_tokens == 0
+
+      assert {:ok, %{noul: 0.99}} = JevDSL.fetch_answer(resp, :urgent)
+      assert {:ok, prio} = JevDSL.fetch_answer(resp, :priority)
+      assert JevDSL.choice?(prio, :p0)
+      assert {:ok, 0.95} = JevDSL.probability(prio, :p0)
+      assert {:ok, clarity} = JevDSL.fetch_answer(resp, :clarity)
+      assert clarity.score == 0.91
+      assert JevDSL.Cache.persistable?({:ok, resp}, [])
+    end
+
+    test "decodes native /v1beta/decisions map-keyed response with total_input_tokens and confidence" do
+      prep = SampleContracts.prepared(:triage)
+
+      body = %{
+        "answers" => %{
+          "urgent" => %{"noul" => 0.98, "confidence" => 0.98},
+          "priority" => %{
+            "choice" => "p2",
+            "confidence" => 0.55,
+            "probabilities" => %{"p0" => 0.45, "p2" => 0.55}
+          },
+          "clarity" => %{
+            "score" => 0.72,
+            "confidence" => 0.82,
+            "probabilities" => %{"vague" => 0.28, "clear" => 0.72}
+          }
+        },
+        "usage_metadata" => %{"total_input_tokens" => 94, "total_output_tokens" => 0}
+      }
+
+      assert {:ok, resp} = Protocol.decode_response(body, prep, "gemini-decision-1")
+      assert resp.model == "gemini-decision-1"
+      assert resp.usage.input_tokens == 94
+      assert resp.usage.output_tokens == 0
+      assert resp.answers.priority.choice == :p2
+      assert JevDSL.Cache.resolve_ttl({:ok, resp}, min_confidence: 0.65) == {:ok, 300}
+    end
+
+    test "decodes single-question flat confidence/probability response" do
+      prep = SampleContracts.prepared(:is_spam)
+
+      body = %{
+        "confidence" => 0.9797708352463237,
+        "total_input_tokens" => 94,
+        "total_output_tokens" => 0
+      }
+
+      assert {:ok, resp} = Protocol.decode_response(body, prep, "gemini-decision-1")
+      assert {:ok, %{noul: 0.9797708352463237}} = JevDSL.fetch_answer(resp, :is_spam)
+      assert resp.usage.input_tokens == 94
+      assert resp.usage.output_tokens == 0
+    end
+
+    test "returns structured error on malformed response body" do
+      prep = SampleContracts.prepared(:is_spam)
+
+      assert {:error, %JevDSL.Error{}} =
+               Protocol.decode_response("not a map", prep, "gemini-decision-1")
+    end
+  end
 end
