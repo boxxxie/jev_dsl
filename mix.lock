@@ -38,7 +38,7 @@
   "spitfire": {:hex, :spitfire, "0.4.3", "83aa224f713966769644772a814a67b26df518d25059b3855c23a2f7b531937a", [:mix], [], "hexpm", "4f771bbdf00fe6eda6e2a7e488c42ead48142fea697349510a41fabb41376632"},
   "stream_data": {:hex, :stream_data, "1.4.0", "026f929db613aabea6208012ae9b8970d3fd5f88b3bdf26831bc536f98c42036", [:mix], [], "hexpm", "2b0ee3a340dcce1c8cf6302a763ee757d1e01c54d6e16d9069062509d68b1dc9"},
   "system_one_contracts": {:hex, :system_one_contracts, "0.1.0", "9e1f08427639b389540d722194d0347e44d2f4b758315947d143e8d4461dbc21", [:mix], [{:jason, "~> 1.4.5", [hex: :jason, repo: "hexpm", optional: false]}], "hexpm", "9f7ce08e9c15b9e19d43fee0d029b7a1632369ff3b73ae46016fb343f8d9f8d5"},
-  "system_one_sdk": {:git, "https://github.com/boxxxie/system_one_sdk.git", "50c2b821e29b6441444b36fba438e909b588b297", [branch: "feat/gemini-decisions-provider", sparse: "packages/system_one_sdk"]},
+  "system_one_sdk": {:git, "https://github.com/boxxxie/system_one_sdk.git", "5d38c4d49f60b1c7046b92ea4831249c1c1d3779", [branch: "feat/gemini-decisions-provider", sparse: "packages/system_one_sdk"]},
   "telemetry": {:hex, :telemetry, "1.4.2", "a0cb522801dffb1c49fe6e30561badffc7b6d0e180db1300df759faa22062855", [:rebar3], [], "hexpm", "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1"},
   "text_diff": {:hex, :text_diff, "0.1.0", "1caf3175e11a53a9a139bc9339bd607c47b9e376b073d4571c031913317fecaa", [:mix], [], "hexpm", "d1ffaaecab338e49357b6daa82e435f877e0649041ace7755583a0ea3362dbd7"},
   "texture": {:hex, :texture, "1.2.1", "ae8d875fb099bcc1ccb0269296bf6c4590116eff9a44895049379359a14d5fca", [:mix], [{:abnf_parsec, "~> 2.0", [hex: :abnf_parsec, repo: "hexpm", optional: false]}], "hexpm", "925b1938891ce5c1d589df408faa7ed57dd872e4aac9521b32495a29b265cb17"},

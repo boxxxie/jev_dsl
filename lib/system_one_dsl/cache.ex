@@ -100,8 +100,15 @@ defmodule SystemOneDSL.Cache do
   end
 
   defp gemini_client_identity(state, fp, client, pclient, opts) do
-    {decisions_mode, model} =
-      GeminiDecisions.cache_identity_fields(client, pclient, opts)
+    decisions_mode =
+      case pclient do
+        %GeminiDecisions.Client{decisions_mode: mode} -> mode
+        _ -> :unified
+      end
+
+    model =
+      Keyword.get(opts, :model) || client.default_model ||
+        (pclient && pclient.default_model) || "gemini-decision-1"
 
     %{
       service: :gemini_decisions,

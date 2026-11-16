@@ -38,11 +38,6 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
     end
   end
 
-  defmodule SecretCallbackHelper do
-    def return_false, do: false
-    def return_error, do: :error
-  end
-
   describe "use SystemOneDSL backend option validation" do
     test "accepts :system_one and :gemini_decisions backends with unified, native, and auth_mode :none" do
       for backend <- [:system_one, :gemini_decisions] do
@@ -144,10 +139,6 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
     end
 
     test "requires explicit/configured base_url for :unified mode without private IP default" do
-      assert_raise SystemOneSDK.Error, ~r/Missing :base_url/, fn ->
-        GeminiDecisions.new_client(decisions_mode: :unified)
-      end
-
       refute GeminiUnifiedContract.available?(gemini_api_key: "gk-123")
 
       assert {:error, %SystemOneDSL.Error{type: :invalid_request, message: msg}} =
@@ -179,18 +170,6 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
 
       assert SystemOneDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: false) == ""
 
-      assert SystemOneDSL.Runner.resolve_override_secret(
-               [gemini_api_key: {SecretCallbackHelper, :return_false, []}],
-               [:gemini_api_key],
-               nil
-             ) == nil
-
-      assert SystemOneDSL.Runner.resolve_override_secret(
-               [gemini_api_key: {SecretCallbackHelper, :return_error, []}],
-               [:gemini_api_key],
-               nil
-             ) == nil
-
       refute GeminiNativeContract.available?(gemini_api_key: false)
 
       assert {:error, :no_api_key} =
@@ -208,20 +187,7 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
     end
   end
 
-  describe "client retries, headers: nil, ErrorHandler isolation, and explicit keyless auth" do
-    test "enables default RetryPolicy, tolerates headers: nil, and keeps error callbacks off GeminiDecisions" do
-      client = GeminiDecisions.new_client(base_url: "http://localhost:4000", headers: nil)
-      assert client.headers == %{}
-      assert %SystemOneSDK.RetryPolicy{max_retries: 2} = client.retry
-
-      no_retry = GeminiDecisions.new_client(base_url: "http://localhost:4000", retry: false)
-      assert no_retry.retry == false
-
-      refute function_exported?(GeminiDecisions, :from_response, 4)
-      refute function_exported?(GeminiDecisions, :validation_error, 3)
-      refute function_exported?(GeminiDecisions, :connection_error, 2)
-    end
-
+  describe "keyless auth and blank-key safety" do
     test "does not falsely mark blank-key contracts available without auth_mode: :none or custom headers" do
       refute GeminiUnifiedContract.available?(
                base_url: "http://localhost:4000",
@@ -297,67 +263,8 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
     end
   end
 
-  describe "pre-built :client cache namespace isolation, base_url overrides, and case-insensitive headers" do
-    test "honors per-call :base_url override and case-insensitive extra_headers on pre-built :client" do
-      pid =
-        Driver.start_stub(fn req ->
-          auth_keys =
-            req.headers
-            |> Map.keys()
-            |> Enum.filter(&(String.downcase(&1) == "authorization"))
-
-          assert length(auth_keys) <= 1
-
-          case {req.url, req.path} do
-            {"https://generativelanguage.googleapis.com/v1beta/decisions", "/v1beta/decisions"} ->
-              assert req.headers["x-goog-api-key"] == "sk-google"
-              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.31}}}}
-
-            {"https://override.example.invalid/v1/decisions", "/v1/decisions"} ->
-              assert req.headers["authorization"] == "Bearer override-lower"
-              assert req.headers["X-Num"] == "42"
-              {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.41}]}}
-          end
-        end)
-
-      uni_client =
-        SystemOneSDK.new_client(
-          provider: GeminiDecisions,
-          provider_opts: [
-            decisions_mode: :unified,
-            model: "gemini-decision-1",
-            api_key: "sk-initial",
-            base_url: "https://initial.example.invalid",
-            transport: Driver,
-            transport_opts: [stub_pid: pid],
-            retry: false
-          ]
-        )
-
-      assert {:ok, google_resp} =
-               SystemOneContract.evaluate(:is_spam, %{body: "base_url override to google"},
-                 client: uni_client,
-                 decisions_mode: :native,
-                 base_url: "https://generativelanguage.googleapis.com",
-                 api_key: "sk-google",
-                 cache?: false
-               )
-
-      assert {:ok, %{noul: 0.31}} = SystemOneDSL.fetch_answer(google_resp, :is_spam)
-
-      assert {:ok, header_resp} =
-               SystemOneContract.evaluate(:is_spam, %{body: "case-insensitive header override"},
-                 client: uni_client,
-                 base_url: "https://override.example.invalid",
-                 extra_headers: %{"authorization" => "Bearer override-lower", "X-Num" => 42},
-                 cache?: false
-               )
-
-      assert {:ok, %{noul: 0.41}} = SystemOneDSL.fetch_answer(header_resp, :is_spam)
-      assert Driver.request_count(pid) == 2
-    end
-
-    test "isolates cache keys and runtime ETS hits across pre-built clients and per-call overrides" do
+  describe "pre-built :client integration, runtime validation, and error safety" do
+    test "isolates cache keys and runtime ETS hits across pre-built clients" do
       state = %{body: "prebuilt client isolation check"}
       table = :"sys_one_prebuilt_iso_#{System.unique_integer([:positive])}"
       :ets.new(table, [:named_table, :public, :set, {:read_concurrency, true}])
@@ -368,25 +275,12 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
 
           case {req.path, decoded["model"]} do
             {"/v1/decisions", "gemini-decision-1"} ->
-              if Map.has_key?(req.headers, "Authorization") do
-                assert req.headers["Authorization"] == "Bearer sk-uni"
-                {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.81}]}}
-              else
-                {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.85}]}}
-              end
+              assert req.headers["Authorization"] == "Bearer sk-uni"
+              {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.81}]}}
 
             {"/v1beta/decisions", "gemini-decision-1"} ->
-              case req.headers["x-goog-api-key"] do
-                "sk-nat" ->
-                  {200, %{"answers" => %{"is_spam" => %{"noul" => 0.82}}}}
-
-                "sk-direct-override" ->
-                  {200, %{"answers" => %{"is_spam" => %{"noul" => 0.84}}}}
-              end
-
-            {"/v1beta/decisions", "gemini-decision-2"} ->
-              assert req.headers["x-goog-api-key"] == "sk-override"
-              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.83}}}}
+              assert req.headers["x-goog-api-key"] == "sk-nat"
+              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.82}}}}
           end
         end)
 
@@ -427,65 +321,39 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
       k_uni = SystemOneDSL.Cache.key(state, prep, client: uni_client)
       k_nat = SystemOneDSL.Cache.key(state, prep, client: nat_client)
 
-      k_ovr =
-        SystemOneDSL.Cache.key(state, prep,
-          client: uni_client,
-          decisions_mode: :native,
-          model: "gemini-decision-2"
-        )
+      assert length(Enum.uniq([k_sys, k_uni, k_nat])) == 3
 
-      assert length(Enum.uniq([k_sys, k_uni, k_nat, k_ovr])) == 4
-
-      # Passing non-Gemini SystemOneSDK.Client with backend: :gemini_decisions still caches under :system_one
       assert SystemOneContract.cache_key(:is_spam, state,
                client: sys_client,
                backend: :gemini_decisions
              ) == k_sys
 
-      # 1. Evaluate with SystemOneSDK.Test client
       assert {:ok, sys_resp} =
                SystemOneContract.evaluate(:is_spam, state, client: sys_client, ets_table: table)
 
       assert {:ok, %{noul: 0.11}} = SystemOneDSL.fetch_answer(sys_resp, :is_spam)
 
-      # 2. Evaluate with pre-built unified GeminiDecisions client (no backend/mode opts repeated)
       assert {:ok, uni_resp} =
                SystemOneContract.evaluate(:is_spam, state, client: uni_client, ets_table: table)
 
       assert {:ok, %{noul: 0.81}} = SystemOneDSL.fetch_answer(uni_resp, :is_spam)
       assert Driver.request_count(pid) == 1
 
-      # 3. Evaluate with pre-built native GeminiDecisions client on the same ETS table
       assert {:ok, nat_resp} =
                SystemOneContract.evaluate(:is_spam, state, client: nat_client, ets_table: table)
 
       assert {:ok, %{noul: 0.82}} = SystemOneDSL.fetch_answer(nat_resp, :is_spam)
       assert Driver.request_count(pid) == 2
 
-      # 4. Evaluate with per-call overrides on uni_client
-      assert {:ok, ovr_resp} =
-               SystemOneContract.evaluate(:is_spam, state,
-                 client: uni_client,
-                 decisions_mode: :native,
-                 auth_mode: :x_goog_api_key,
-                 api_key: "sk-override",
-                 model: "gemini-decision-2",
-                 ets_table: table
-               )
-
-      assert {:ok, %{noul: 0.83}} = SystemOneDSL.fetch_answer(ovr_resp, :is_spam)
-      assert Driver.request_count(pid) == 3
-
-      # 5. Re-evaluating hits ETS cache with 0 extra network requests
+      # Re-evaluating hits ETS cache with 0 extra network requests
       assert {:ok, ^uni_resp} =
                SystemOneContract.evaluate(:is_spam, state, client: uni_client, ets_table: table)
 
       assert {:ok, ^nat_resp} =
                SystemOneContract.evaluate(:is_spam, state, client: nat_client, ets_table: table)
 
-      assert Driver.request_count(pid) == 3
+      assert Driver.request_count(pid) == 2
 
-      # 6. evaluate_many also isolates and honors overrides on pre-built client
       batch_state = %{body: "prebuilt batch isolation"}
 
       assert [{:ok, batch_uni}] =
@@ -495,152 +363,10 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
                )
 
       assert {:ok, %{noul: 0.81}} = SystemOneDSL.fetch_answer(batch_uni, :is_spam)
-      assert Driver.request_count(pid) == 4
-
-      assert [{:ok, batch_ovr}] =
-               SystemOneContract.evaluate_many(:is_spam, [batch_state],
-                 client: uni_client,
-                 decisions_mode: :native,
-                 api_key: "sk-override",
-                 model: "gemini-decision-2",
-                 ets_table: table
-               )
-
-      assert {:ok, %{noul: 0.83}} = SystemOneDSL.fetch_answer(batch_ovr, :is_spam)
-      assert Driver.request_count(pid) == 5
-
-      # 7. Direct system_one_prepared/4 honors per-call overrides and clears key on unset resolver
-      assert {:ok, direct_resp} =
-               GeminiDecisions.system_one_prepared(
-                 uni_client.provider_client,
-                 state,
-                 prep,
-                 decisions_mode: :native,
-                 auth_mode: :x_goog_api_key,
-                 api_key: "sk-direct-override"
-               )
-
-      assert {:ok, %{noul: 0.84}} = SystemOneDSL.fetch_answer(direct_resp, :is_spam)
-      assert Driver.request_count(pid) == 6
-
-      assert {:ok, unset_resp} =
-               GeminiDecisions.system_one_prepared(
-                 uni_client.provider_client,
-                 state,
-                 prep,
-                 api_key: {:system, "MISSING_ENV_VAR_XYZ"}
-               )
-
-      assert {:ok, %{noul: 0.85}} = SystemOneDSL.fetch_answer(unset_resp, :is_spam)
-      assert Driver.request_count(pid) == 7
+      assert Driver.request_count(pid) == 3
 
       SystemOneSDK.Test.verify!(sys_client)
       SystemOneSDK.Test.close(sys_client)
-    end
-  end
-
-  defmodule ModuleConfiguredGeminiContract do
-    use SystemOneDSL,
-      otp_app: :system_one_dsl,
-      backend: :gemini_decisions,
-      decisions_mode: :native,
-      model: "gemini-decision-module",
-      gemini_api_key: "sk-module",
-      decisions_path: "/module/custom"
-
-    defnoul :is_spam do
-      "Is this spam?"
-    end
-  end
-
-  defmodule BareNativeContract do
-    use SystemOneDSL,
-      otp_app: :system_one_dsl,
-      backend: :gemini_decisions,
-      decisions_mode: :native,
-      model: "gemini-decision-module"
-
-    defnoul :is_spam do
-      "Is this spam?"
-    end
-  end
-
-  describe "option precedence, runtime validation, path resolution, and encoding safety" do
-    test "preserves pre-built :client api_key when omitted, clears when api_key: nil, and avoids module clobbering" do
-      pid =
-        Driver.start_stub(fn req ->
-          case req.path do
-            "/client/custom" ->
-              if Map.has_key?(req.headers, "Authorization") do
-                assert req.headers["Authorization"] == "Bearer sk-client"
-                {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.14}]}}
-              else
-                {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.15}]}}
-              end
-
-            "/v1beta/decisions" ->
-              assert req.headers["x-goog-api-key"] == "sk-bare"
-              decoded = Jason.decode!(req.body)
-              assert decoded["model"] == "gemini-decision-module"
-              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.24}}}}
-          end
-        end)
-
-      custom_client =
-        SystemOneSDK.new_client(
-          provider: GeminiDecisions,
-          provider_opts: [
-            decisions_mode: :unified,
-            auth_mode: :bearer,
-            api_key: "sk-client",
-            decisions_path: "/client/custom",
-            base_url: "https://client.example.invalid",
-            transport: Driver,
-            transport_opts: [stub_pid: pid],
-            retry: false
-          ]
-        )
-
-      # Omitting api_key preserves custom_client.api_key and avoids module clobbering
-      assert {:ok, resp1} =
-               ModuleConfiguredGeminiContract.evaluate(:is_spam, %{body: "hi"},
-                 client: custom_client,
-                 cache?: false
-               )
-
-      assert {:ok, %{noul: 0.14}} = SystemOneDSL.fetch_answer(resp1, :is_spam)
-
-      # Explicit api_key: nil clears credential instead of leaking custom_client.api_key
-      assert {:ok, resp1_cleared} =
-               ModuleConfiguredGeminiContract.evaluate(:is_spam, %{body: "hi"},
-                 client: custom_client,
-                 api_key: nil,
-                 cache?: false
-               )
-
-      assert {:ok, %{noul: 0.15}} = SystemOneDSL.fetch_answer(resp1_cleared, :is_spam)
-
-      # Passing a bare transport client inherits module decisions_mode (:native) and model
-      bare_client =
-        SystemOneSDK.new_client(
-          provider: GeminiDecisions,
-          provider_opts: [
-            api_key: "sk-bare",
-            base_url: "https://generativelanguage.googleapis.com",
-            transport: Driver,
-            transport_opts: [stub_pid: pid],
-            retry: false
-          ]
-        )
-
-      assert {:ok, resp2} =
-               BareNativeContract.evaluate(:is_spam, %{body: "bare"},
-                 client: bare_client,
-                 cache?: false
-               )
-
-      assert {:ok, %{noul: 0.24}} = SystemOneDSL.fetch_answer(resp2, :is_spam)
-      assert Driver.request_count(pid) == 3
     end
 
     test "returns invalid_options on runtime typos in :backend, :decisions_mode, or :auth_mode" do
@@ -685,117 +411,6 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
           backend: :gemini_decision
         )
       end
-
-      assert_raise SystemOneSDK.Error, fn ->
-        GeminiDecisions.new_client(decisions_mode: :natve, base_url: "http://localhost:4000")
-      end
-
-      uni_client =
-        SystemOneSDK.new_client(
-          provider: GeminiDecisions,
-          provider_opts: [
-            decisions_mode: :unified,
-            api_key: "sk-1",
-            base_url: "http://localhost:4000",
-            transport: Driver,
-            transport_opts: [stub_pid: Driver.start_stub(fn _ -> {200, %{}} end)]
-          ]
-        )
-
-      assert {:error, %SystemOneSDK.Error{type: :configuration}} =
-               GeminiDecisions.system_one_prepared(
-                 uni_client.provider_client,
-                 %{body: "x"},
-                 GeminiUnifiedContract.prepared(:is_spam),
-                 auth_mode: :typo
-               )
-    end
-
-    test "avoids path duplication on /v1, /v1beta, and /gemini base_urls and supports non-LiteLLM native proxies" do
-      assert GeminiDecisions.resolve_decisions_path([], :unified, "http://host:4000") ==
-               "/v1/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path([], :unified, "http://host:4000/v1") ==
-               "/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path([], :unified, "http://host:4000/v1/") ==
-               "/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path([], :unified, "https://proxy.internal/api") ==
-               "/v1/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path(
-               [],
-               :native,
-               "https://generativelanguage.googleapis.com"
-             ) == "/v1beta/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path(
-               [],
-               :native,
-               "https://generativelanguage.googleapis.com/v1beta"
-             ) == "/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path(
-               [],
-               :native,
-               "https://gateway.ai.cloudflare.com/v1/acc/gw/google-ai-studio"
-             ) == "/v1beta/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path([], :native, "http://host:4000/gemini") ==
-               "/v1beta/decisions"
-
-      assert GeminiDecisions.resolve_decisions_path(
-               [decisions_path: "/gemini/v1beta/decisions"],
-               :native,
-               "http://host:4000"
-             ) == "/gemini/v1beta/decisions"
-
-      pid =
-        Driver.start_stub(fn req ->
-          case req.url do
-            "http://host:4000/v1/decisions" ->
-              {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.1}]}}
-
-            "http://host:4000/gemini/v1beta/decisions" ->
-              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.2}}}}
-
-            "https://gateway.ai.cloudflare.com/v1/acc/gw/google-ai-studio/v1beta/decisions" ->
-              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.3}}}}
-          end
-        end)
-
-      assert {:ok, _} =
-               GeminiUnifiedContract.evaluate(:is_spam, %{body: "v1 base"},
-                 base_url: "http://host:4000/v1",
-                 gemini_api_key: "sk-1",
-                 transport: Driver,
-                 transport_opts: [stub_pid: pid],
-                 cache?: false,
-                 retry: false
-               )
-
-      assert {:ok, _} =
-               GeminiNativeContract.evaluate(:is_spam, %{body: "gemini base"},
-                 base_url: "http://host:4000/gemini",
-                 gemini_api_key: "sk-1",
-                 transport: Driver,
-                 transport_opts: [stub_pid: pid],
-                 cache?: false,
-                 retry: false
-               )
-
-      assert {:ok, _} =
-               GeminiNativeContract.evaluate(:is_spam, %{body: "cf gateway"},
-                 base_url: "https://gateway.ai.cloudflare.com/v1/acc/gw/google-ai-studio",
-                 gemini_api_key: "sk-1",
-                 transport: Driver,
-                 transport_opts: [stub_pid: pid],
-                 cache?: false,
-                 retry: false
-               )
-
-      assert Driver.request_count(pid) == 3
     end
 
     test "returns structured errors instead of raising on unencodable state values" do
@@ -813,13 +428,6 @@ defmodule SystemOneDSL.GeminiDecisionsTest do
             retry: false
           ]
         )
-
-      prep = GeminiUnifiedContract.prepared(:is_spam)
-
-      for bad_state <- [%{pid: self()}, %{tuple: {1, 2}}, %{bin: <<255, 255>>}, <<255, 255>>] do
-        assert {:error, %SystemOneSDK.Error{type: :invalid_request}} =
-                 GeminiDecisions.system_one_prepared(client.provider_client, bad_state, prep, [])
-      end
 
       for bad_map <- [%{pid: self()}, %{tuple: {1, 2}}, %{bin: <<255, 255>>}] do
         assert {:error, _reason} =

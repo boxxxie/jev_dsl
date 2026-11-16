@@ -212,7 +212,7 @@ end
 
 Key & endpoint resolution details:
 * **API keys:** Resolved from `:gemini_api_key` / `:api_key` (supporting strings, `{:system, "ENV"}`, 0-arity functions, or `{mod, fun, args}`), `otp_app` / `:system_one_dsl` app config, and environment variables. In `:native` mode targeting Google, `GEMINI_API_KEY` takes precedence over `LITELLM_API_KEY` / `LITELLM_MASTER_KEY`; in `:unified` or proxy modes, `LITELLM_*` takes precedence.
-* **Per-call overrides & pre-built clients:** Pass `backend:`, `decisions_mode:`, `auth_mode:`, `decisions_path:`, `base_url:`, `model:`, `extra_body:`, or `extra_headers:` per `evaluate/3` or `evaluate_many/3` call—even when reusing a pre-built `SystemOneSDK.new_client(provider: SystemOneSDK.Providers.GeminiDecisions, ...)` client. Cache keys automatically isolate across backend, mode, and model.
+* **Per-call overrides & pre-built clients:** Pass `backend:`, `decisions_mode:`, `auth_mode:`, `decisions_path:`, `base_url:`, `model:`, `extra_body:`, or `extra_headers:` per `evaluate/3` or `evaluate_many/3` call, or pass separate pre-built `SystemOneSDK.new_client(provider: SystemOneSDK.Providers.GeminiDecisions, ...)` clients per mode/endpoint. Cache keys automatically isolate across backend, mode, and model.
 
 ---
 
