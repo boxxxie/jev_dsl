@@ -372,17 +372,6 @@ defmodule JevDSL.Runner do
     end
   end
 
-  @doc false
-  def resolve_override_secret(opts, keys, fallback_raw) do
-    opt_val = Enum.find_value(keys, &non_blank_secret(Keyword.get(opts, &1)))
-
-    cond do
-      is_binary(opt_val) -> opt_val
-      explicit_blank_opt?(opts, keys) -> nil
-      true -> resolve_secret(fallback_raw)
-    end
-  end
-
   defp explicit_blank_opt?(opts, keys) do
     Enum.any?(keys, fn key ->
       case Keyword.fetch(opts, key) do
@@ -452,7 +441,7 @@ defmodule JevDSL.Runner do
     raw_merged = Keyword.merge(module_opts, opts)
 
     with :ok <- validate_runtime_opts(raw_merged) do
-      {:ok, sync_client_opts(raw_merged, module_opts, opts)}
+      {:ok, normalize_client_backend(raw_merged, opts)}
     end
   end
 
@@ -482,13 +471,18 @@ defmodule JevDSL.Runner do
     end
   end
 
-  defp sync_client_opts(merged, module_opts, opts) do
+  defp normalize_client_backend(merged, opts) do
     case Keyword.get(merged, :client) do
       %SystemOneSDK.Client{
         provider: GeminiDecisions,
         provider_client: %GeminiDecisions.Client{} = pclient
       } = client ->
-        sync_gemini_client_opts(merged, module_opts, opts, client, pclient)
+        model = Keyword.get(opts, :model) || client.default_model || pclient.default_model
+
+        merged
+        |> Keyword.put(:backend, :gemini_decisions)
+        |> Keyword.put(:decisions_mode, pclient.decisions_mode)
+        |> Keyword.put(:model, model)
 
       %SystemOneSDK.Client{} ->
         Keyword.put(merged, :backend, :system_one)
@@ -497,119 +491,6 @@ defmodule JevDSL.Runner do
         merged
     end
   end
-
-  defp sync_gemini_client_opts(
-         merged,
-         module_opts,
-         opts,
-         %SystemOneSDK.Client{} = client,
-         %GeminiDecisions.Client{} = pclient
-       ) do
-    call_opts =
-      opts
-      |> Keyword.put_new(:otp_app, Keyword.get(merged, :otp_app))
-      |> maybe_inherit_module_opt(:decisions_mode, module_opts, pclient, :decisions_mode)
-      |> maybe_inherit_module_opt(:auth_mode, module_opts, pclient, :auth_mode)
-      |> maybe_inherit_module_opt(:decisions_path, module_opts, pclient, :decisions_path)
-      |> maybe_inherit_module_opt(:base_url, module_opts, pclient, :base_url)
-      |> maybe_inherit_module_model(module_opts, client, pclient)
-      |> maybe_inherit_module_api_key(module_opts, client, pclient)
-
-    updated_pclient = GeminiDecisions.apply_call_opts(pclient, call_opts)
-
-    updated_client = %SystemOneSDK.Client{
-      client
-      | provider_client: updated_pclient,
-        default_model: updated_pclient.default_model,
-        api_key: updated_pclient.api_key,
-        base_url: updated_pclient.base_url,
-        context: updated_pclient.context,
-        pristine_client: updated_pclient.pristine_client
-    }
-
-    merged
-    |> Keyword.drop([:gemini_api_key, :api_key, :decisions_path, :base_url])
-    |> Keyword.put(:backend, :gemini_decisions)
-    |> Keyword.put(:decisions_mode, updated_pclient.decisions_mode)
-    |> Keyword.put(:auth_mode, updated_pclient.auth_mode)
-    |> Keyword.put(:model, updated_pclient.default_model)
-    |> maybe_put_kw(:decisions_path, updated_pclient.decisions_path)
-    |> maybe_put_kw(:base_url, updated_pclient.base_url)
-    |> maybe_put_kw(:api_key, updated_pclient.api_key)
-    |> Keyword.put(:client, updated_client)
-  end
-
-  defp maybe_inherit_module_opt(call_opts, opt_key, module_opts, pclient, client_field) do
-    cond do
-      Keyword.get(call_opts, opt_key) != nil ->
-        call_opts
-
-      GeminiDecisions.explicit_field?(pclient, client_field) ->
-        call_opts
-
-      (mod_val = Keyword.get(module_opts, opt_key)) != nil ->
-        Keyword.put(call_opts, opt_key, mod_val)
-
-      true ->
-        call_opts
-    end
-  end
-
-  defp maybe_inherit_module_model(
-         call_opts,
-         module_opts,
-         %SystemOneSDK.Client{} = client,
-         pclient
-       ) do
-    cond do
-      Keyword.get(call_opts, :model) != nil ->
-        call_opts
-
-      GeminiDecisions.explicit_field?(pclient, :default_model) ->
-        maybe_put_kw(call_opts, :model, client.default_model || pclient.default_model)
-
-      (mod_model = Keyword.get(module_opts, :model)) != nil ->
-        Keyword.put(call_opts, :model, mod_model)
-
-      true ->
-        maybe_put_kw(call_opts, :model, client.default_model || pclient.default_model)
-    end
-  end
-
-  defp maybe_inherit_module_api_key(
-         call_opts,
-         module_opts,
-         %SystemOneSDK.Client{} = client,
-         pclient
-       ) do
-    call_has_key? =
-      Enum.any?(
-        [:api_key, :gemini_api_key],
-        &(non_blank_secret(Keyword.get(call_opts, &1)) != nil)
-      ) or
-        explicit_blank_opt?(call_opts, [:api_key, :gemini_api_key])
-
-    client_has_key? =
-      GeminiDecisions.explicit_field?(pclient, :api_key) or
-        non_blank_secret(client.api_key) != nil
-
-    cond do
-      call_has_key? or client_has_key? ->
-        call_opts
-
-      (mod_gemini = Keyword.get(module_opts, :gemini_api_key)) != nil ->
-        Keyword.put(call_opts, :gemini_api_key, mod_gemini)
-
-      (mod_api = Keyword.get(module_opts, :api_key)) != nil ->
-        Keyword.put(call_opts, :api_key, mod_api)
-
-      true ->
-        call_opts
-    end
-  end
-
-  defp maybe_put_kw(opts, _key, nil), do: opts
-  defp maybe_put_kw(opts, key, val), do: Keyword.put(opts, key, val)
 
   defp can_run_or_tier2?(opts) do
     use_tier2? = Keyword.get(opts, :use_tier2_cache, true)
