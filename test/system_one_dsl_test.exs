@@ -232,6 +232,133 @@ defmodule SystemOneDSLTest do
         """)
       end
     end
+
+    test "supports partial cache_key, available?, evaluate, evaluate!, and evaluate_many overrides across arities" do
+      {_mods, diagnostics} =
+        Code.with_diagnostics(fn ->
+          Code.compile_string("""
+          defmodule SystemOneDSLTest.PartialCacheKey2 do
+            use SystemOneDSL
+            defnoul :is_spam do "Spam?" end
+            def cache_key(key, _state), do: "custom2_\#{key}"
+          end
+
+          defmodule SystemOneDSLTest.PartialCacheKey3 do
+            use SystemOneDSL
+            defnoul :is_spam do "Spam?" end
+            def cache_key(key, _state, opts), do: "custom3_\#{key}_\#{Keyword.get(opts, :tag, :none)}"
+          end
+
+          defmodule SystemOneDSLTest.PartialRunnerLowerArity do
+            use SystemOneDSL
+            defnoul :is_spam do "Spam?" end
+
+            def available?, do: true
+            def evaluate(key, state), do: {:ok, {:custom_eval_2, key, state}}
+            def evaluate!(key, state), do: {:custom_eval_bang_2, key, state}
+            def evaluate_many(key, states), do: Enum.map(states, &{:ok, {:custom_many_2, key, &1}})
+          end
+
+          defmodule SystemOneDSLTest.PartialRunnerHigherArity do
+            use SystemOneDSL
+            defnoul :is_spam do "Spam?" end
+
+            def available?(opts, eval_fn_key),
+              do: Keyword.get(opts, :flag, false) and eval_fn_key == :eval_fn
+
+            def evaluate(key, state, opts),
+              do: {:ok, {:custom_eval_3, key, state, Keyword.get(opts, :tag, :none)}}
+
+            def evaluate!(key, state, opts),
+              do: {:custom_eval_bang_3, key, state, Keyword.get(opts, :tag, :none)}
+
+            def evaluate_many(key, states, opts) do
+              tag = Keyword.get(opts, :tag, :none)
+              Enum.map(states, &{:ok, {:custom_many_3, key, &1, tag}})
+            end
+          end
+
+          defmodule SystemOneDSLTest.PartialAvailableOne do
+            use SystemOneDSL
+            defnoul :is_spam do "Spam?" end
+
+            def available?(opts \\\\ []), do: Keyword.get(opts, :custom, false)
+          end
+          """)
+        end)
+
+      assert diagnostics == []
+
+      ck2 = Module.concat(SystemOneDSLTest, :PartialCacheKey2)
+      ck3 = Module.concat(SystemOneDSLTest, :PartialCacheKey3)
+      lower = Module.concat(SystemOneDSLTest, :PartialRunnerLowerArity)
+      higher = Module.concat(SystemOneDSLTest, :PartialRunnerHigherArity)
+      avail_one = Module.concat(SystemOneDSLTest, :PartialAvailableOne)
+
+      assert ck2.cache_key(:is_spam, %{a: 1}) == "custom2_is_spam"
+      assert String.starts_with?(ck2.cache_key(:is_spam, %{a: 1}, []), "jev_")
+      assert ck3.cache_key(:is_spam, %{a: 1}) == "custom3_is_spam_none"
+      assert ck3.cache_key(:is_spam, %{a: 1}, tag: :x) == "custom3_is_spam_x"
+
+      assert lower.available?() == true
+      assert lower.available?(api_key: false) == false
+
+      assert lower.available?(
+               [api_key: false, custom_fn: fn _ -> {:ok, %{}} end],
+               :custom_fn
+             ) == true
+
+      assert lower.evaluate(:is_spam, %{a: 1}) ==
+               {:ok, {:custom_eval_2, :is_spam, %{a: 1}}}
+
+      assert lower.evaluate(:is_spam, %{a: 1}, eval_fn: fn s -> {:ok, {:runner_3, s}} end) ==
+               {:ok, {:runner_3, %{a: 1}}}
+
+      assert lower.evaluate!(:is_spam, %{a: 1}) ==
+               {:custom_eval_bang_2, :is_spam, %{a: 1}}
+
+      assert lower.evaluate!(:is_spam, %{a: 1}, eval_fn: fn s -> {:ok, {:runner_bang_3, s}} end) ==
+               {:runner_bang_3, %{a: 1}}
+
+      assert lower.evaluate_many(:is_spam, [%{a: 1}]) ==
+               [{:ok, {:custom_many_2, :is_spam, %{a: 1}}}]
+
+      assert lower.evaluate_many(:is_spam, [%{a: 1}],
+               eval_fn: fn s -> {:ok, {:runner_many_3, s}} end
+             ) == [{:ok, {:runner_many_3, %{a: 1}}}]
+
+      assert higher.available?() == false
+      assert higher.available?(flag: true) == true
+      assert higher.available?([flag: true], :eval_fn) == true
+      assert higher.available?([flag: true], :other) == false
+
+      assert higher.evaluate(:is_spam, %{a: 1}) ==
+               {:ok, {:custom_eval_3, :is_spam, %{a: 1}, :none}}
+
+      assert higher.evaluate(:is_spam, %{a: 1}, tag: :x) ==
+               {:ok, {:custom_eval_3, :is_spam, %{a: 1}, :x}}
+
+      assert higher.evaluate!(:is_spam, %{a: 1}) ==
+               {:custom_eval_bang_3, :is_spam, %{a: 1}, :none}
+
+      assert higher.evaluate!(:is_spam, %{a: 1}, tag: :x) ==
+               {:custom_eval_bang_3, :is_spam, %{a: 1}, :x}
+
+      assert higher.evaluate_many(:is_spam, [%{a: 1}]) ==
+               [{:ok, {:custom_many_3, :is_spam, %{a: 1}, :none}}]
+
+      assert higher.evaluate_many(:is_spam, [%{a: 1}], tag: :x) ==
+               [{:ok, {:custom_many_3, :is_spam, %{a: 1}, :x}}]
+
+      assert avail_one.available?() == false
+      assert avail_one.available?(custom: true) == true
+      assert avail_one.available?([api_key: false], :eval_fn) == false
+
+      assert avail_one.available?(
+               [api_key: false, custom_fn: fn _ -> {:ok, %{}} end],
+               :custom_fn
+             ) == true
+    end
   end
 
   describe "SystemOneDSL.Cache deterministic hashing, property invariants & ETS resilience" do
