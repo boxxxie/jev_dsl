@@ -112,8 +112,8 @@ defmodule SystemOneDSL.Cache.ETS do
       [{^key, value, expires_at}] when expires_at > now ->
         {:ok, value}
 
-      [{^key, _value, _expired}] ->
-        :ets.delete(table, key)
+      [{^key, _value, expired_at}] ->
+        :ets.match_delete(table, {key, :_, expired_at})
         :miss
 
       [] ->
@@ -126,7 +126,7 @@ defmodule SystemOneDSL.Cache.ETS do
   @impl SystemOneDSL.Cache
   def put(key, value, opts \\ []) when is_binary(key) do
     table = resolve_table(opts)
-    ttl = Keyword.get(opts, :ttl, @default_ttl)
+    ttl = resolve_ttl_opt(opts)
     ensure_table(table)
     expires_at = System.monotonic_time(:second) + max(ttl, 1)
     :ets.insert(table, {key, value, expires_at})
@@ -148,7 +148,7 @@ defmodule SystemOneDSL.Cache.ETS do
   @impl SystemOneDSL.Cache
   def put_many(entries, opts \\ []) when is_list(entries) do
     table = resolve_table(opts)
-    ttl = Keyword.get(opts, :ttl, @default_ttl)
+    ttl = resolve_ttl_opt(opts)
     ensure_table(table)
     expires_at = System.monotonic_time(:second) + max(ttl, 1)
 
@@ -161,6 +161,13 @@ defmodule SystemOneDSL.Cache.ETS do
     :ok
   rescue
     ArgumentError -> {:error, :ets_unavailable}
+  end
+
+  defp resolve_ttl_opt(opts) do
+    case Keyword.get(opts, :ttl) || Keyword.get(opts, :cache_ttl) do
+      ttl when is_integer(ttl) and ttl > 0 -> ttl
+      _ -> @default_ttl
+    end
   end
 
   @doc """
@@ -256,7 +263,7 @@ defmodule SystemOneDSL.Cache.ETS do
           pid
         rescue
           ArgumentError ->
-            Process.exit(pid, :normal)
+            Process.exit(pid, :kill)
             Process.whereis(@heir_name)
         end
     end
