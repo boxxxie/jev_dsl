@@ -9,7 +9,9 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   alias SystemOneSDK.{ChoiceAnswer, NoulAnswer, Prepared, ScoreAnswer, SystemOneResponse, Usage}
 
   @type mode :: :unified | :native
-  @type auth_mode :: :bearer | :x_goog_api_key
+  @type auth_mode :: :bearer | :x_goog_api_key | :none
+
+  @prob_epsilon 1.0e-6
 
   @noul_boolean_keys ["noul", "decision", "answer", "value", "result", "predicate", "probability"]
   @noul_numeric_keys [
@@ -27,6 +29,7 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   Builds authentication headers for the given `api_key` and `auth_mode`.
   """
   @spec auth_headers(String.t() | nil, auth_mode()) :: %{optional(String.t()) => String.t()}
+  def auth_headers(_api_key, :none), do: %{}
   def auth_headers(nil, _auth_mode), do: %{}
   def auth_headers("", _auth_mode), do: %{}
   def auth_headers(api_key, :bearer), do: %{"Authorization" => "Bearer #{api_key}"}
@@ -219,17 +222,42 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   end
 
   defp extract_raw_answers(%{"answers" => list}, _prepared) when is_list(list) do
-    by_name =
-      Enum.reduce(list, %{}, fn
-        %{"name" => name} = item, acc -> Map.put(acc, to_string(name), item)
-        _, acc -> acc
-      end)
+    Enum.reduce_while(list, {:ok, %{}}, fn
+      %{"name" => name} = item, {:ok, acc}
+      when (is_binary(name) and name != "") or
+             (is_atom(name) and not is_nil(name) and not is_boolean(name)) or
+             is_integer(name) ->
+        {:cont, {:ok, Map.put(acc, to_string(name), item)}}
 
-    {:ok, by_name}
+      item, _acc ->
+        {:halt,
+         {:error,
+          %Error{
+            type: :invalid_response,
+            message: "Invalid answer entry in Gemini Decisions 'answers' list",
+            details: %{reason: :invalid_answer_entry, item: item}
+          }}}
+    end)
   end
 
-  defp extract_raw_answers(%{"answers" => map}, _prepared) when is_map(map) do
-    {:ok, Map.new(map, fn {k, v} -> {to_string(k), v} end)}
+  defp extract_raw_answers(%{"answers" => map}, _prepared)
+       when is_map(map) and not is_struct(map) do
+    Enum.reduce_while(map, {:ok, %{}}, fn
+      {k, v}, {:ok, acc}
+      when (is_binary(k) and k != "") or
+             (is_atom(k) and not is_nil(k) and not is_boolean(k)) or
+             is_integer(k) ->
+        {:cont, {:ok, Map.put(acc, to_string(k), v)}}
+
+      {k, _v}, _acc ->
+        {:halt,
+         {:error,
+          %Error{
+            type: :invalid_response,
+            message: "Invalid answer key in Gemini Decisions 'answers' map",
+            details: %{reason: :invalid_answer_key, key: k}
+          }}}
+    end)
   end
 
   defp extract_raw_answers(body, %Prepared{ordered_keys: [single_key]} = prepared) do
@@ -323,14 +351,24 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
 
   defp normalize_question_answer(caller_key, %{type: "noul"}, raw_ans) do
     if invalid_noul_shape?(raw_ans) do
-      invalid_answer_error("Invalid noul answer shape for #{inspect(caller_key)}", raw_ans)
+      invalid_answer_error(
+        "Invalid noul answer shape for #{inspect(caller_key)}",
+        raw_ans,
+        :invalid_noul_shape,
+        caller_key
+      )
     else
       case resolve_noul_probability(raw_ans) do
         {:ok, prob} ->
           {:ok, %NoulAnswer{noul: prob, id: caller_key, raw: raw_ans}}
 
-        :error ->
-          invalid_answer_error("Invalid noul probability for #{inspect(caller_key)}", raw_ans)
+        {:error, reason} ->
+          invalid_answer_error(
+            "Invalid noul probability for #{inspect(caller_key)}: #{reason}",
+            raw_ans,
+            reason,
+            caller_key
+          )
       end
     end
   end
@@ -338,16 +376,19 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   defp normalize_question_answer(caller_key, %{type: "choice"} = defn, raw_ans) do
     option_order = Map.get(defn, :option_order, [])
     valid_options = choice_valid_options(defn, option_order)
-    choice_raw = raw_ans["choice"]
-    raw_conf = raw_ans["confidence"]
 
-    with true <- valid_choice_shape?(raw_ans),
-         true <- valid_choice_value?(choice_raw),
-         choice_str = to_string(choice_raw),
-         true <- MapSet.size(valid_options) == 0 or MapSet.member?(valid_options, choice_str),
-         {:ok, parsed_probs} <- normalize_probabilities(raw_ans["probabilities"]),
-         conf = if(is_nil(raw_conf), do: Map.get(parsed_probs, choice_str, 1.0), else: raw_conf),
-         true <- is_number(conf) do
+    with :ok <- validate_choice_shape(caller_key, raw_ans),
+         {:ok, choice_str} <- extract_valid_choice(caller_key, raw_ans, valid_options),
+         {:ok, parsed_probs} <-
+           normalize_choice_probabilities(caller_key, raw_ans["probabilities"], raw_ans),
+         {:ok, conf} <-
+           resolve_choice_confidence(
+             caller_key,
+             raw_ans["confidence"],
+             parsed_probs,
+             choice_str,
+             raw_ans
+           ) do
       probs =
         if is_nil(raw_ans["probabilities"]),
           do: backfill_choice_probabilities(choice_str, conf, valid_options),
@@ -362,25 +403,20 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
          raw: raw_ans,
          option_order: option_order
        }}
-    else
-      _ ->
-        invalid_answer_error("Invalid choice for #{inspect(caller_key)}", raw_ans)
     end
   end
 
   defp normalize_question_answer(caller_key, %{type: "score"} = defn, raw_ans) do
     levels = Map.get(defn, :levels, [])
     legend = Map.new(levels, fn lvl -> {lvl.index, lvl.label} end)
-    raw_score = raw_ans["score"]
-    raw_conf = raw_ans["confidence"]
-    conf = if is_nil(raw_conf), do: 1.0, else: raw_conf
     max_index = max(length(levels) - 1, 1)
 
-    with true <- valid_score_shape?(raw_ans),
-         {:ok, probs} <- normalize_score_probabilities(raw_ans["probabilities"], levels),
-         true <- is_number(raw_score),
-         true <- is_number(conf),
-         {:ok, score} <- normalize_score_value(raw_score, probs, max_index) do
+    with :ok <- validate_score_shape(caller_key, raw_ans),
+         {:ok, probs} <-
+           normalize_score_probabilities(caller_key, raw_ans["probabilities"], levels, raw_ans),
+         {:ok, conf} <- resolve_score_confidence(caller_key, raw_ans["confidence"], raw_ans),
+         {:ok, score} <-
+           normalize_score_value(caller_key, raw_ans["score"], probs, max_index, raw_ans) do
       {:ok,
        %ScoreAnswer{
          score: score,
@@ -391,14 +427,16 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
          raw: raw_ans,
          levels: levels
        }}
-    else
-      _ ->
-        invalid_answer_error("Invalid score for #{inspect(caller_key)}", raw_ans)
     end
   end
 
-  defp invalid_answer_error(message, raw_ans) do
-    {:error, %Error{type: :invalid_response, message: message, details: %{answer: raw_ans}}}
+  defp invalid_answer_error(message, raw_ans, reason, caller_key) do
+    {:error,
+     %Error{
+       type: :invalid_response,
+       message: message,
+       details: %{reason: reason, question: caller_key, answer: raw_ans}
+     }}
   end
 
   defp invalid_noul_shape?(raw_ans) do
@@ -407,31 +445,147 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
       raw_ans["type"] not in [nil, "noul", "predicate"]
   end
 
-  defp valid_choice_shape?(raw_ans) do
-    not Map.has_key?(raw_ans, "noul") and
-      not Map.has_key?(raw_ans, "score") and
-      raw_ans["type"] in [nil, "choice"]
+  defp validate_choice_shape(caller_key, raw_ans) do
+    if not Map.has_key?(raw_ans, "noul") and
+         not Map.has_key?(raw_ans, "score") and
+         raw_ans["type"] in [nil, "choice"] do
+      :ok
+    else
+      invalid_answer_error(
+        "Invalid choice shape for #{inspect(caller_key)}",
+        raw_ans,
+        :invalid_choice_shape,
+        caller_key
+      )
+    end
   end
 
-  defp valid_score_shape?(raw_ans) do
-    not Map.has_key?(raw_ans, "noul") and
-      not Map.has_key?(raw_ans, "choice") and
-      raw_ans["type"] in [nil, "score"]
+  defp extract_valid_choice(caller_key, raw_ans, valid_options) do
+    choice_raw = raw_ans["choice"]
+
+    cond do
+      not valid_choice_value?(choice_raw) ->
+        invalid_answer_error(
+          "Invalid choice value for #{inspect(caller_key)}",
+          raw_ans,
+          :invalid_choice_value,
+          caller_key
+        )
+
+      MapSet.size(valid_options) > 0 and not MapSet.member?(valid_options, to_string(choice_raw)) ->
+        invalid_answer_error(
+          "Unknown choice #{inspect(choice_raw)} for #{inspect(caller_key)}",
+          raw_ans,
+          :unknown_choice,
+          caller_key
+        )
+
+      true ->
+        {:ok, to_string(choice_raw)}
+    end
+  end
+
+  defp normalize_choice_probabilities(caller_key, raw_probs, raw_ans) do
+    case normalize_probabilities(raw_probs) do
+      {:ok, probs} ->
+        {:ok, probs}
+
+      :error ->
+        invalid_answer_error(
+          "Invalid choice probabilities for #{inspect(caller_key)}",
+          raw_ans,
+          :invalid_probabilities,
+          caller_key
+        )
+    end
+  end
+
+  defp resolve_choice_confidence(caller_key, raw_conf, parsed_probs, choice_str, raw_ans) do
+    conf = if is_nil(raw_conf), do: Map.get(parsed_probs, choice_str, 1.0), else: raw_conf
+
+    case clamp_unit_probability(conf) do
+      {:ok, valid_conf} ->
+        {:ok, valid_conf}
+
+      :error ->
+        invalid_answer_error(
+          "Invalid choice confidence for #{inspect(caller_key)}",
+          raw_ans,
+          :invalid_confidence,
+          caller_key
+        )
+    end
+  end
+
+  defp validate_score_shape(caller_key, raw_ans) do
+    if not Map.has_key?(raw_ans, "noul") and
+         not Map.has_key?(raw_ans, "choice") and
+         raw_ans["type"] in [nil, "score"] do
+      :ok
+    else
+      invalid_answer_error(
+        "Invalid score shape for #{inspect(caller_key)}",
+        raw_ans,
+        :invalid_score_shape,
+        caller_key
+      )
+    end
+  end
+
+  defp resolve_score_confidence(caller_key, raw_conf, raw_ans) do
+    conf = if is_nil(raw_conf), do: 1.0, else: raw_conf
+
+    case clamp_unit_probability(conf) do
+      {:ok, valid_conf} ->
+        {:ok, valid_conf}
+
+      :error ->
+        invalid_answer_error(
+          "Invalid score confidence for #{inspect(caller_key)}",
+          raw_ans,
+          :invalid_confidence,
+          caller_key
+        )
+    end
   end
 
   defp resolve_noul_probability(raw_ans) do
     case find_boolean_field(raw_ans, @noul_boolean_keys) do
       {:ok, bool_val} ->
-        conf =
-          case raw_ans["confidence"] do
-            nil -> numeric_prob(raw_ans["probability"]) || numeric_prob(raw_ans["noul"])
-            val -> val
-          end
-
-        resolve_boolean_confidence(bool_val, conf)
+        resolve_boolean_noul(bool_val, raw_ans)
 
       :none ->
         resolve_first_numeric_noul(raw_ans)
+    end
+  end
+
+  defp resolve_boolean_noul(bool_val, raw_ans) do
+    case raw_ans["confidence"] do
+      nil ->
+        case numeric_prob(raw_ans["probability"]) || numeric_prob(raw_ans["noul"]) do
+          nil ->
+            {:ok, if(bool_val, do: 1.0, else: 0.0)}
+
+          prob_val ->
+            resolve_consistent_probability(bool_val, prob_val)
+        end
+
+      conf ->
+        resolve_boolean_confidence(bool_val, conf)
+    end
+  end
+
+  defp resolve_consistent_probability(bool_val, prob_val) do
+    case clamp_unit_probability(prob_val) do
+      {:ok, prob} ->
+        if (bool_val and prob >= 0.5) or (not bool_val and prob <= 0.5) do
+          {:ok, prob}
+        else
+          {:error, :contradictory_noul_polarity}
+        end
+
+      :error ->
+        {:error, :invalid_noul_probability}
     end
   end
 
@@ -446,7 +600,7 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
 
   defp resolve_first_numeric_noul(raw_ans) do
     case Enum.find(@noul_numeric_keys, &present_value?(raw_ans, &1)) do
-      nil -> :error
+      nil -> {:error, :missing_noul_probability}
       key -> resolve_numeric_prob(raw_ans[key])
     end
   end
@@ -456,19 +610,33 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   defp numeric_prob(val) when is_number(val), do: val
   defp numeric_prob(_), do: nil
 
-  defp resolve_numeric_prob(val) when is_number(val) and val >= 0.0 and val <= 1.0,
-    do: {:ok, val}
-
-  defp resolve_numeric_prob(_), do: :error
-
-  defp resolve_boolean_confidence(bool, nil), do: {:ok, if(bool, do: 1.0, else: 0.0)}
-
-  defp resolve_boolean_confidence(bool, conf)
-       when is_number(conf) and conf >= 0.0 and conf <= 1.0 do
-    {:ok, if(bool, do: conf, else: 1.0 - conf)}
+  defp resolve_numeric_prob(val) do
+    case clamp_unit_probability(val) do
+      {:ok, prob} -> {:ok, prob}
+      :error -> {:error, :invalid_noul_probability}
+    end
   end
 
-  defp resolve_boolean_confidence(_, _), do: :error
+  defp resolve_boolean_confidence(bool, conf) do
+    case clamp_unit_probability(conf) do
+      {:ok, valid_conf} ->
+        {:ok, if(bool, do: valid_conf, else: max(1.0 - valid_conf, 0.0))}
+
+      :error ->
+        {:error, :invalid_noul_confidence}
+    end
+  end
+
+  defp clamp_unit_probability(val) when is_number(val) do
+    cond do
+      val >= 0.0 and val <= 1.0 -> {:ok, val}
+      val >= -@prob_epsilon and val < 0.0 -> {:ok, 0.0}
+      val > 1.0 and val <= 1.0 + @prob_epsilon -> {:ok, 1.0}
+      true -> :error
+    end
+  end
+
+  defp clamp_unit_probability(_), do: :error
 
   defp backfill_choice_probabilities(choice_str, conf, valid_options)
        when is_number(conf) and conf >= 0.0 and conf <= 1.0 do
@@ -514,24 +682,54 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   defp valid_choice_value?(val) when is_atom(val), do: not is_nil(val) and not is_boolean(val)
   defp valid_choice_value?(_), do: false
 
-  defp normalize_score_value(raw_score, probs, max_index) do
-    score =
-      if max_index > 1 and map_size(probs) > 0 and raw_score >= 0.0 and raw_score <= 1.0 do
-        expected = Enum.reduce(probs, 0.0, fn {idx, p}, acc -> acc + idx * p end)
+  defp normalize_score_value(caller_key, raw_score, _probs, _max_index, raw_ans)
+       when not is_number(raw_score) do
+    invalid_answer_error(
+      "Invalid score value for #{inspect(caller_key)}",
+      raw_ans,
+      :invalid_score,
+      caller_key
+    )
+  end
 
-        if abs(raw_score * max_index - expected) + 1.0e-6 < abs(raw_score - expected) do
-          raw_score * max_index
-        else
-          raw_score
-        end
-      else
-        raw_score
-      end
+  defp normalize_score_value(caller_key, raw_score, probs, max_index, raw_ans) do
+    score = maybe_rescale_score(raw_score, probs, max_index)
 
-    if score >= 0.0 and score <= max_index do
-      {:ok, score}
+    case clamp_score_range(score, max_index) do
+      {:ok, valid_score} ->
+        {:ok, valid_score}
+
+      :error ->
+        invalid_answer_error(
+          "Score out of range for #{inspect(caller_key)}",
+          raw_ans,
+          :score_out_of_range,
+          caller_key
+        )
+    end
+  end
+
+  defp maybe_rescale_score(raw_score, probs, max_index)
+       when max_index > 1 and map_size(probs) > 0 and raw_score >= -@prob_epsilon and
+              raw_score <= 1.0 + @prob_epsilon do
+    unit_score = min(max(raw_score, 0.0), 1.0)
+    expected = Enum.reduce(probs, 0.0, fn {idx, p}, acc -> acc + idx * p end)
+
+    if abs(unit_score * max_index - expected) < 0.05 and abs(unit_score - expected) > 0.15 do
+      unit_score * max_index
     else
-      :error
+      raw_score
+    end
+  end
+
+  defp maybe_rescale_score(raw_score, _probs, _max_index), do: raw_score
+
+  defp clamp_score_range(score, max_index) do
+    cond do
+      score >= 0.0 and score <= max_index -> {:ok, score}
+      score >= -@prob_epsilon and score < 0.0 -> {:ok, 0.0}
+      score > max_index and score <= max_index + @prob_epsilon -> {:ok, max_index * 1.0}
+      true -> :error
     end
   end
 
@@ -540,37 +738,58 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   defp normalize_probabilities(probs)
        when (is_map(probs) and not is_struct(probs)) or is_list(probs) do
     with {:ok, pairs} <- extract_probability_pairs(probs) do
-      Enum.reduce_while(pairs, {:ok, %{}}, fn
-        {k, v}, {:ok, acc}
-        when (is_binary(k) or (is_atom(k) and not is_nil(k)) or is_integer(k)) and is_number(v) ->
-          {:cont, {:ok, Map.put(acc, to_string(k), v)}}
-
-        _, _ ->
-          {:halt, :error}
-      end)
+      Enum.reduce_while(pairs, {:ok, %{}}, &put_clamped_probability/2)
     end
   end
 
   defp normalize_probabilities(_), do: :error
 
-  defp normalize_score_probabilities(nil, _levels), do: {:ok, %{}}
+  defp put_clamped_probability({k, v}, {:ok, acc})
+       when is_binary(k) or (is_atom(k) and not is_nil(k)) or is_integer(k) do
+    case clamp_unit_probability(v) do
+      {:ok, prob} -> {:cont, {:ok, Map.put(acc, to_string(k), prob)}}
+      :error -> {:halt, :error}
+    end
+  end
 
-  defp normalize_score_probabilities(raw_probs, levels)
+  defp put_clamped_probability(_pair, _acc), do: {:halt, :error}
+
+  defp normalize_score_probabilities(_caller_key, nil, _levels, _raw_ans), do: {:ok, %{}}
+
+  defp normalize_score_probabilities(caller_key, raw_probs, levels, raw_ans)
        when (is_map(raw_probs) and not is_struct(raw_probs)) or is_list(raw_probs) do
     label_to_idx = Map.new(levels, fn lvl -> {lvl.label, lvl.index} end)
     idx_set = MapSet.new(levels, & &1.index)
 
-    with {:ok, pairs} <- extract_probability_pairs(raw_probs) do
-      reduce_score_probabilities(pairs, label_to_idx, idx_set)
+    with {:ok, pairs} <- extract_probability_pairs(raw_probs),
+         {:ok, probs} <- reduce_score_probabilities(pairs, label_to_idx, idx_set) do
+      {:ok, probs}
+    else
+      :error ->
+        invalid_answer_error(
+          "Invalid score probabilities for #{inspect(caller_key)}",
+          raw_ans,
+          :invalid_probabilities,
+          caller_key
+        )
     end
   end
 
-  defp normalize_score_probabilities(_, _levels), do: :error
+  defp normalize_score_probabilities(caller_key, _raw_probs, _levels, raw_ans) do
+    invalid_answer_error(
+      "Invalid score probabilities for #{inspect(caller_key)}",
+      raw_ans,
+      :invalid_probabilities,
+      caller_key
+    )
+  end
 
   defp reduce_score_probabilities(pairs, label_to_idx, idx_set) do
     Enum.reduce_while(pairs, {:ok, %{}}, fn {k, v}, {:ok, acc} ->
-      case resolve_score_index(k, label_to_idx, idx_set) do
-        {:ok, idx} when is_number(v) -> {:cont, {:ok, Map.put(acc, idx, v)}}
+      with {:ok, idx} <- resolve_score_index(k, label_to_idx, idx_set),
+           {:ok, prob} <- clamp_unit_probability(v) do
+        {:cont, {:ok, Map.put(acc, idx, prob)}}
+      else
         _ -> {:halt, :error}
       end
     end)
@@ -603,15 +822,18 @@ defmodule JevDSL.Providers.GeminiDecisions.Protocol do
   defp resolve_score_index(k, label_to_idx, idx_set) when is_binary(k) or is_atom(k) do
     str = to_string(k)
 
-    with :error <- Map.fetch(label_to_idx, str),
-         {int, ""} <- Integer.parse(str),
-         true <- MapSet.member?(idx_set, int) do
-      {:ok, int}
-    else
+    case Map.fetch(label_to_idx, str) do
       {:ok, idx} -> {:ok, idx}
-      _ -> :error
+      :error -> parse_score_index(str, idx_set)
     end
   end
 
   defp resolve_score_index(_, _, _), do: :error
+
+  defp parse_score_index(str, idx_set) do
+    case Integer.parse(str) do
+      {int, ""} -> if MapSet.member?(idx_set, int), do: {:ok, int}, else: :error
+      _ -> :error
+    end
+  end
 end

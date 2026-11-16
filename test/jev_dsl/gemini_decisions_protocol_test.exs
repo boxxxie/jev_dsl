@@ -178,7 +178,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       refute Map.has_key?(q_nat, "criteria")
     end
 
-    test "builds auth headers for Bearer (unified) vs x-goog-api-key (native)" do
+    test "builds auth headers for Bearer (unified), x-goog-api-key (native), and :none" do
       assert Protocol.auth_headers("secret-1", :bearer) == %{
                "Authorization" => "Bearer secret-1"
              }
@@ -186,6 +186,8 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert Protocol.auth_headers("secret-2", :x_goog_api_key) == %{
                "x-goog-api-key" => "secret-2"
              }
+
+      assert Protocol.auth_headers("secret-3", :none) == %{}
     end
   end
 
@@ -325,18 +327,28 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
 
       assert {:ok, decision_prob_resp} =
                Protocol.decode_response(
-                 %{"decision" => false, "probability" => 0.95},
+                 %{"decision" => false, "probability" => 0.04},
                  prep,
                  "gemini-decision-1"
                )
 
       assert {:ok, %{noul: decision_prob2}} = JevDSL.fetch_answer(decision_prob_resp, :is_spam)
       assert decision_prob2 < 0.2
-      assert_in_delta decision_prob2, 0.05, 1.0e-6
+      assert_in_delta decision_prob2, 0.04, 1.0e-6
+
+      assert {:ok, predicate_prob_resp} =
+               Protocol.decode_response(
+                 %{"predicate" => false, "probability" => 0.04},
+                 prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, %{noul: pred_prob}} = JevDSL.fetch_answer(predicate_prob_resp, :is_spam)
+      assert_in_delta pred_prob, 0.04, 1.0e-6
 
       assert {:ok, noul_prob_resp} =
                Protocol.decode_response(
-                 %{"noul" => false, "probability" => 0.98},
+                 %{"noul" => false, "probability" => 0.02},
                  prep,
                  "gemini-decision-1"
                )
@@ -344,6 +356,28 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert {:ok, %{noul: noul_prob2}} = JevDSL.fetch_answer(noul_prob_resp, :is_spam)
       assert noul_prob2 < 0.2
       assert_in_delta noul_prob2, 0.02, 1.0e-6
+
+      assert {:ok, true_prob_resp} =
+               Protocol.decode_response(
+                 %{"decision" => true, "probability" => 0.96},
+                 prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, %{noul: true_prob2}} = JevDSL.fetch_answer(true_prob_resp, :is_spam)
+      assert_in_delta true_prob2, 0.96, 1.0e-6
+
+      # Contradictory boolean decision vs P(true) probability is rejected
+      assert {:error,
+              %JevDSL.Error{
+                type: :invalid_response,
+                details: %{reason: :contradictory_noul_polarity}
+              }} =
+               Protocol.decode_response(
+                 %{"decision" => false, "probability" => 0.95},
+                 prep,
+                 "gemini-decision-1"
+               )
     end
 
     test "rejects hallucinated choices, backfills omitted flat choice probabilities, and guards flat type mismatches" do
@@ -481,12 +515,120 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert_in_delta norm_ans.score, 1.85, 1.0e-6
 
       # Out-of-range score rejected
-      assert {:error, %JevDSL.Error{type: :invalid_response}} =
+      assert {:error,
+              %JevDSL.Error{type: :invalid_response, details: %{reason: :score_out_of_range}}} =
                Protocol.decode_response(
                  %{"score" => 2.5, "confidence" => 0.9},
                  prep,
                  "gemini-decision-1"
                )
+
+      # Index-scaled score near modal middle (0.88 vs expected 1.34) is NOT falsely doubled to 1.76
+      modal_body = %{
+        "answers" => [
+          %{
+            "name" => "completeness",
+            "type" => "score",
+            "score" => 0.88,
+            "confidence" => 0.46,
+            "probabilities" => [
+              %{"value" => 0, "label" => "incomplete", "probability" => 0.10},
+              %{"value" => 1, "label" => "partial", "probability" => 0.46},
+              %{"value" => 2, "label" => "complete", "probability" => 0.44}
+            ]
+          }
+        ]
+      }
+
+      assert {:ok, modal_resp} = Protocol.decode_response(modal_body, prep, "gemini-decision-1")
+      assert {:ok, modal_enriched} = SystemOneSDK.SemanticResponse.enrich(modal_resp, prep, 0.02)
+      assert {:ok, modal_ans} = JevDSL.fetch_answer(modal_enriched, :completeness)
+      assert modal_ans.level == 1
+      assert modal_ans.label == "partial"
+      assert_in_delta modal_ans.score, 0.88, 1.0e-6
+    end
+
+    test "clamps tiny float drift within epsilon and rejects negative or > 1.0 probabilities/confidences" do
+      noul_prep = SampleContracts.prepared(:is_spam)
+      choice_prep = SampleContracts.prepared(:sentiment)
+      score_prep = SampleContracts.prepared(:completeness)
+
+      # Epsilon drift clamped cleanly to [0.0, 1.0]
+      assert {:ok, drift_noul} =
+               Protocol.decode_response(
+                 %{"noul" => 1.0000000000000002},
+                 noul_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, %{noul: 1.0}} = JevDSL.fetch_answer(drift_noul, :is_spam)
+
+      assert {:ok, drift_neg} =
+               Protocol.decode_response(%{"noul" => -1.0e-12}, noul_prep, "gemini-decision-1")
+
+      assert {:ok, %{noul: drift_neg_val}} = JevDSL.fetch_answer(drift_neg, :is_spam)
+      assert drift_neg_val == 0.0
+
+      # Out-of-bounds confidences and probabilities rejected
+      assert {:error,
+              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_confidence}}} =
+               Protocol.decode_response(
+                 %{"choice" => "positive", "confidence" => 1.2},
+                 choice_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:error,
+              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_probabilities}}} =
+               Protocol.decode_response(
+                 %{
+                   "choice" => "positive",
+                   "confidence" => 0.9,
+                   "probabilities" => %{"positive" => 0.9, "negative" => -0.1}
+                 },
+                 choice_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:error,
+              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_confidence}}} =
+               Protocol.decode_response(
+                 %{"score" => 1.5, "confidence" => -0.2},
+                 score_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:error,
+              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_probabilities}}} =
+               Protocol.decode_response(
+                 %{
+                   "score" => 1.5,
+                   "confidence" => 0.9,
+                   "probabilities" => %{"0" => 1.5, "1" => 0.0, "2" => 0.0}
+                 },
+                 score_prep,
+                 "gemini-decision-1"
+               )
+    end
+
+    test "returns invalid_response instead of Protocol.UndefinedError on non-stringifiable answer names" do
+      noul_prep = SampleContracts.prepared(:is_spam)
+
+      for bad_name <- [%{"bad" => 1}, ["x"], nil, ""] do
+        assert {:error, %JevDSL.Error{type: :invalid_response}} =
+                 Protocol.decode_response(
+                   %{"answers" => [%{"name" => bad_name, "probability" => 0.5}]},
+                   noul_prep,
+                   "gemini-decision-1"
+                 )
+
+        assert {:error, %JevDSL.Error{type: :invalid_response}} =
+                 Protocol.decode_response(
+                   %{"answers" => %{bad_name => %{"probability" => 0.5}}},
+                   noul_prep,
+                   "gemini-decision-1"
+                 )
+      end
     end
 
     test "returns invalid_response instead of crashing on malformed probabilities or non-string probability keys" do
