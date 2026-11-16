@@ -552,4 +552,448 @@ defmodule SystemOneDSLTest do
       |> assert_unchanged()
     end
   end
+
+  defmodule InlineSubquestionContracts do
+    use SystemOneDSL,
+      otp_app: :system_one_dsl
+
+    defcontract :inline_bundle do
+      noul(:is_urgent,
+        ask: "Page immediately?",
+        do: (
+          true -> "Outage or active breach."
+          false -> "Normal ticket."
+        )
+      )
+
+      noul(:is_aliased, as: :aliased_noul, do: "Aliased inline prompt?")
+
+      choice(:priority,
+        ask: "Priority level?",
+        do: (
+          urgent -> "Handle immediately."
+          normal -> "Handle in queue."
+        )
+      )
+
+      score(:clarity,
+        ask: "Clarity level?",
+        do: (
+          vague -> "Unclear steps."
+          clear -> "Clear steps."
+        )
+      )
+    end
+  end
+
+  defmodule PartialOverrideLowerContracts do
+    use SystemOneDSL,
+      otp_app: :system_one_dsl
+
+    defnoul :is_spam do
+      "Is this spam?"
+    end
+
+    def evaluate(key, state) do
+      evaluate(key, state, eval_fn: fn _ -> {:ok, %{from: :lower_override}} end)
+    end
+
+    def available?(opts) do
+      Keyword.get(opts, :force_available, false) or available?(opts, :eval_fn)
+    end
+  end
+
+  defmodule PartialOverrideUpperContracts do
+    use SystemOneDSL,
+      otp_app: :system_one_dsl
+
+    defnoul :is_spam do
+      "Is this spam?"
+    end
+
+    def evaluate(key, state, opts) do
+      SystemOneDSL.Runner.evaluate(
+        __MODULE__,
+        key,
+        state,
+        Keyword.put_new(opts, :eval_fn, fn _ -> {:ok, %{from: :upper_override}} end)
+      )
+    end
+
+    def evaluate!(key, state) do
+      evaluate!(key, state, eval_fn: fn _ -> {:ok, %{from: :bang_lower}} end)
+    end
+
+    def evaluate_many(key, states) do
+      evaluate_many(key, states, eval_fn: fn s -> {:ok, %{echo: s}} end)
+    end
+  end
+
+  defmodule ModuleBackendKeyContracts do
+    use SystemOneDSL,
+      otp_app: :system_one_dsl,
+      backend: :gemini_decisions,
+      decisions_mode: :unified,
+      base_url: "http://localhost:4000",
+      gemini_api_key: "mod-gemini-secret",
+      tier2_cache: SystemOneDSLTest.TestTier2Cache
+
+    defnoul :is_spam do
+      "Is this spam?"
+    end
+  end
+
+  defmodule CustomEvalKeyContracts do
+    use SystemOneDSL,
+      otp_app: :system_one_dsl,
+      eval_fn_key: :my_eval_fn
+
+    defnoul :is_spam do
+      "Is this spam?"
+    end
+  end
+
+  defmodule SpyPutManyCache do
+    @behaviour SystemOneDSL.Cache
+
+    @impl true
+    def get(_key, _opts), do: :miss
+
+    @impl true
+    def put(_key, _value, _opts), do: :ok
+
+    @impl true
+    def put_many(entries, opts) do
+      if pid = Keyword.get(opts, :spy_pid) do
+        send(pid, {:spy_put_many, entries, Keyword.get(opts, :ttl)})
+      end
+
+      :ok
+    end
+  end
+
+  describe "bug audit regressions" do
+    test "BUG-001: defcontract supports inline do: combined with keyword options for noul, choice, and score" do
+      {:ok, contract} = InlineSubquestionContracts.contract(:inline_bundle)
+      [q_urgent, q_aliased, q_priority, q_clarity] = contract.questions
+
+      assert q_urgent.name == :is_urgent
+      assert q_urgent.instructions == "Page immediately?"
+      assert q_urgent.criteria == [{true, "Outage or active breach."}, {false, "Normal ticket."}]
+
+      assert q_aliased.name == :aliased_noul
+      assert q_aliased.instructions == "Aliased inline prompt?"
+      assert q_aliased.criteria == %{}
+
+      assert q_priority.name == :priority
+      assert q_priority.instructions == "Priority level?"
+      assert q_priority.criteria == [urgent: "Handle immediately.", normal: "Handle in queue."]
+
+      assert q_clarity.name == :clarity
+      assert q_clarity.instructions == "Clarity level?"
+      assert q_clarity.criteria == [vague: "Unclear steps.", clear: "Clear steps."]
+
+      prep = InlineSubquestionContracts.prepared(:inline_bundle)
+      assert prep.definitions["priority"].option_order == [:urgent, :normal]
+      assert Enum.map(prep.definitions["clarity"].levels, & &1.label) == ["vague", "clear"]
+    end
+
+    test "BUG-002: quote_runner_api preserves complementary arities on partial overrides", %{
+      cache_opts: cache_opts
+    } do
+      eval_opts = [eval_fn: fn _ -> {:ok, %{ok: true}} end] ++ cache_opts
+
+      assert {:ok, %{from: :lower_override}} =
+               PartialOverrideLowerContracts.evaluate(:is_spam, %{text: "a"})
+
+      assert {:ok, %{ok: true}} =
+               PartialOverrideLowerContracts.evaluate(:is_spam, %{text: "a"}, eval_opts)
+
+      refute PartialOverrideLowerContracts.available?()
+      assert PartialOverrideLowerContracts.available?(force_available: true)
+      assert PartialOverrideLowerContracts.available?(eval_opts, :eval_fn)
+
+      assert {:ok, %{from: :upper_override}} =
+               PartialOverrideUpperContracts.evaluate(:is_spam, %{text: "b"})
+
+      assert %{from: :bang_lower} =
+               PartialOverrideUpperContracts.evaluate!(:is_spam, %{text: "b"})
+
+      assert %{ok: true} =
+               PartialOverrideUpperContracts.evaluate!(:is_spam, %{text: "b"}, eval_opts)
+
+      assert [{:ok, %{echo: %{text: "c"}}}] =
+               PartialOverrideUpperContracts.evaluate_many(:is_spam, [%{text: "c"}])
+
+      assert [{:ok, %{ok: true}}] =
+               PartialOverrideUpperContracts.evaluate_many(:is_spam, [%{text: "c"}], eval_opts)
+    end
+
+    test "BUG-003 & BUG-014: adapter_put_many/3 enforces resolve_ttl/2 and nil TTL/confidence fallbacks",
+         %{cache_opts: cache_opts} do
+      high_choice =
+        {:ok,
+         %SystemOneSDK.SystemOneResponse{
+           model: "jev-test",
+           usage: %{},
+           answers: %{
+             tone: %SystemOneSDK.ChoiceAnswer{
+               choice: "positive",
+               confidence: 0.9,
+               probabilities: %{"positive" => 0.9}
+             }
+           }
+         }}
+
+      low_choice =
+        {:ok,
+         %SystemOneSDK.SystemOneResponse{
+           model: "jev-test",
+           usage: %{},
+           answers: %{
+             tone: %SystemOneSDK.ChoiceAnswer{
+               choice: "positive",
+               confidence: 0.3,
+               probabilities: %{"positive" => 0.55, "neutral" => 0.45}
+             }
+           }
+         }}
+
+      assert Cache.resolve_ttl(high_choice, cache_ttl: nil, ttl: 120) == {:ok, 120}
+      assert Cache.resolve_ttl(high_choice, cache_ttl: nil, ttl: nil) == {:ok, 604_800}
+      assert Cache.cacheable?(high_choice, min_confidence: nil)
+      assert :ok = ETS.put("nil_ttl_key", :ok_val, [ttl: nil, cache_ttl: nil] ++ cache_opts)
+      assert {:ok, :ok_val} = ETS.get("nil_ttl_key", cache_opts)
+
+      entries = [
+        {"k_err", :sentiment, %{text: "e"}, {:error, :timeout}},
+        {"k_low", :sentiment, %{text: "l"}, low_choice},
+        {"k_high", :sentiment, %{text: "h"}, high_choice}
+      ]
+
+      assert :ok =
+               Cache.adapter_put_many(
+                 SpyPutManyCache,
+                 entries,
+                 spy_pid: self(),
+                 cache_ttl: 7200
+               )
+
+      assert_receive {:spy_put_many, [{"k_low", :sentiment, %{text: "l"}, ^low_choice}], 300}
+      assert_receive {:spy_put_many, [{"k_high", :sentiment, %{text: "h"}, ^high_choice}], 7200}
+
+      assert :ok = Cache.adapter_put_many(ETS, entries, [cache_ttl: 7200] ++ cache_opts)
+      assert ETS.get("k_err", cache_opts) == :miss
+      assert ETS.get("k_low", cache_opts) == {:ok, low_choice}
+      assert ETS.get("k_high", cache_opts) == {:ok, high_choice}
+    end
+
+    test "BUG-004 & BUG-012: ETS atomic expired deletion preserves newer writes and heir_loop does not leak",
+         %{cache_opts: cache_opts} do
+      table = Keyword.fetch!(cache_opts, :ets_table)
+      expired_at = System.monotonic_time(:second) - 10
+      future_at = System.monotonic_time(:second) + 600
+
+      :ets.insert(table, {"atomic_key", :fresh_val, future_at})
+      refute :ets.match_delete(table, {"atomic_key", :_, expired_at}) == false
+      assert ETS.get("atomic_key", cache_opts) == {:ok, :fresh_val}
+
+      # Ensure stale match pattern does not delete newer entry while expired entry is evicted
+      :ets.insert(table, {"expired_key", :stale_val, expired_at})
+      assert ETS.get("expired_key", cache_opts) == :miss
+      assert :ets.lookup(table, "expired_key") == []
+
+      race_table = :"jev_heir_race_#{System.unique_integer([:positive])}"
+
+      1..8
+      |> Task.async_stream(
+        fn idx ->
+          ETS.put("k_#{idx}", idx, ets_table: race_table, ttl: 60)
+        end,
+        max_concurrency: 8
+      )
+      |> Stream.run()
+
+      heir_procs =
+        Enum.filter(Process.list(), fn pid ->
+          case Process.info(pid, [:current_function, :registered_name]) do
+            [current_function: {ETS, :heir_loop, 0}, registered_name: _] -> true
+            _ -> false
+          end
+        end)
+
+      assert length(heir_procs) <= 1
+    end
+
+    test "BUG-005: CUE.export/1 quotes non-identifier labels while preserving valid identifiers" do
+      q = %Question{
+        name: :"question-1",
+        type: :choice,
+        instructions: "Pick one",
+        criteria: [{"Needs Review", "Ambiguous"}, {:_internal, "Hidden"}, {:ok_opt, "Good"}]
+      }
+
+      prep = SystemOneSDK.prepare!(ok: SystemOneSDK.noul("Ok?"))
+      contract = %Contract{name: :"ticket-triage", questions: [q], prepared: prep}
+
+      cue = SystemOneDSL.CUE.export(%{"ticket-triage" => contract})
+      assert cue =~ ~s("ticket-triage": {)
+      assert cue =~ ~s("question-1": {)
+      assert cue =~ ~s("Needs Review": "Ambiguous")
+      assert cue =~ ~s("_internal": "Hidden")
+      assert cue =~ ~s(ok_opt: "Good")
+    end
+
+    test "BUG-006: per-call :api_key overrides module-level backend-specific API keys" do
+      driver = SystemOneDSL.ATDD.GeminiDecisionsDriver
+
+      refute ModuleBackendKeyContracts.available?(api_key: false, use_tier2_cache: false)
+
+      assert {:error, :no_api_key} =
+               ModuleBackendKeyContracts.evaluate(
+                 :is_spam,
+                 %{body: "blank"},
+                 api_key: false,
+                 use_tier2_cache: false,
+                 cache?: false
+               )
+
+      stub_pid =
+        driver.start_stub(fn req ->
+          assert req.headers["Authorization"] == "Bearer call-override-key"
+          {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.1}]}}
+        end)
+
+      assert {:ok, resp} =
+               ModuleBackendKeyContracts.evaluate(
+                 :is_spam,
+                 %{body: "override"},
+                 api_key: "call-override-key",
+                 transport: driver,
+                 transport_opts: [stub_pid: stub_pid],
+                 cache?: false,
+                 retry: false
+               )
+
+      assert {:ok, %{noul: 0.1}} = SystemOneDSL.fetch_answer(resp, :is_spam)
+      assert driver.request_count(stub_pid) == 1
+    end
+
+    test "BUG-007: tier2_cache: false disables Tier-2 cache in available? and evaluate", %{
+      cache_opts: cache_opts
+    } do
+      refute ModuleBackendKeyContracts.available?(
+               [api_key: false, tier2_cache: false] ++ cache_opts
+             )
+
+      client =
+        SystemOneSDK.Test.client()
+        |> SystemOneSDK.Test.stub(is_spam: {:noul, 0.85})
+
+      assert {:ok, resp} =
+               ModuleBackendKeyContracts.evaluate(
+                 :is_spam,
+                 %{body: "no tier2"},
+                 [client: client, tier2_cache: false] ++ cache_opts
+               )
+
+      assert resp.answers.is_spam.noul == 0.85
+      SystemOneSDK.Test.verify!(client)
+      SystemOneSDK.Test.close(client)
+    end
+
+    test "BUG-008: cacheable?/2 checks numeric :confidence on plain-map answers without :score" do
+      low_plain = {:ok, %{answers: %{tone: %{choice: :positive, confidence: 0.2}}}}
+      high_plain = {:ok, %{answers: %{tone: %{choice: :positive, confidence: 0.9}}}}
+
+      refute Cache.cacheable?(low_plain)
+      assert Cache.cacheable?(high_plain)
+    end
+
+    test "BUG-011 & BUG-013: fetch_answer!/2 handles non-map answers and nil never matches empty strings" do
+      assert_raise KeyError, fn ->
+        SystemOneDSL.fetch_answer!(%{answers: nil}, :tone)
+      end
+
+      assert_raise KeyError, fn ->
+        SystemOneDSL.fetch_answer!(%{answers: [:not_a_map]}, :tone)
+      end
+
+      refute SystemOneDSL.choice?(%{choice: nil}, "")
+      refute SystemOneDSL.choice?(%{choice: ""}, nil)
+      refute SystemOneDSL.choice?(%{choice: nil}, nil)
+      refute SystemOneDSL.choice?(nil, "")
+
+      assert :error = SystemOneDSL.fetch_answer(%{answers: %{"" => :x}}, nil)
+      assert :error = SystemOneDSL.fetch_answer(%{answers: %{nil => :x}}, "")
+      assert :error = SystemOneDSL.probability(%{probabilities: %{"" => 0.5}}, nil)
+      assert :error = SystemOneDSL.probability(%{probabilities: %{nil => 0.5}}, "")
+    end
+
+    test "BUG-015: evaluate_many deduplicates identical states across live misses and L2 batch writes",
+         %{cache_opts: cache_opts} do
+      state_a = %{text: "dup state a"}
+      state_b = %{text: "unique state b"}
+
+      client =
+        SystemOneSDK.Test.client()
+        |> SystemOneSDK.Test.stub(tone: {:choice, "positive", 0.95})
+        |> SystemOneSDK.Test.stub(tone: {:choice, "negative", 0.92})
+
+      results =
+        SampleContracts.evaluate_many(
+          :sentiment,
+          [state_a, state_b, state_a],
+          [client: client, tier2_cache: SpyPutManyCache, spy_pid: self()] ++ cache_opts
+        )
+
+      assert [res_a1, res_b, res_a2] = results
+      assert res_a1 == res_a2
+      refute res_a1 == res_b
+      assert length(SystemOneSDK.Test.requests(client)) == 2
+
+      assert_receive {:spy_put_many, live_l2_entries, _ttl}
+      assert length(live_l2_entries) == 2
+
+      # L1 hit + L2 backfill with duplicate states also deduplicates L2 entries
+      assert :ok =
+               TestTier2Cache.put(
+                 SampleContracts.cache_key(:sentiment, state_b),
+                 res_b,
+                 cache_opts
+               )
+
+      backfill_results =
+        SampleContracts.evaluate_many(
+          :sentiment,
+          [state_a, state_a],
+          [client: client, tier2_cache: SpyPutManyCache, spy_pid: self()] ++ cache_opts
+        )
+
+      assert backfill_results == [res_a1, res_a1]
+      assert_receive {:spy_put_many, backfill_l2_entries, _ttl}
+      assert length(backfill_l2_entries) == 1
+
+      SystemOneSDK.Test.verify!(client)
+      SystemOneSDK.Test.close(client)
+    end
+
+    test "BUG-016: available?/2 respects :eval_fn_key from module and call options", %{
+      cache_opts: cache_opts
+    } do
+      mock = fn _ -> {:ok, %{answers: %{is_spam: %{noul: 0.1}}}} end
+
+      refute CustomEvalKeyContracts.available?(cache_opts)
+      assert CustomEvalKeyContracts.available?([my_eval_fn: mock] ++ cache_opts)
+
+      assert {:ok, %{answers: %{is_spam: %{noul: 0.1}}}} =
+               CustomEvalKeyContracts.evaluate(
+                 :is_spam,
+                 %{text: "hi"},
+                 [my_eval_fn: mock] ++ cache_opts
+               )
+
+      assert SampleContracts.available?([eval_fn_key: :call_eval, call_eval: mock] ++ cache_opts)
+    end
+  end
 end
