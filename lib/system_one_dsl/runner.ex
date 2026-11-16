@@ -85,8 +85,10 @@ defmodule SystemOneDSL.Runner do
   end
 
   defp has_eval_fn?(merged, eval_fn_key) do
-    Enum.any?([eval_fn_key, :eval_fn, :jev_eval_fn], fn key ->
-      is_function(Keyword.get(merged, key), 1)
+    configured_key = Keyword.get(merged, :eval_fn_key, :eval_fn)
+
+    Enum.any?([eval_fn_key, configured_key, :eval_fn, :jev_eval_fn], fn key ->
+      is_atom(key) and not is_nil(key) and is_function(Keyword.get(merged, key), 1)
     end)
   end
 
@@ -448,12 +450,41 @@ defmodule SystemOneDSL.Runner do
         _ -> []
       end
 
-    module_opts = Keyword.merge(base_opts, app_mod_opts)
-    raw_merged = Keyword.merge(module_opts, opts)
+    module_opts = merge_opts_layer(base_opts, app_mod_opts)
+    raw_merged = merge_opts_layer(module_opts, opts)
 
     with :ok <- validate_runtime_opts(raw_merged) do
       {:ok, sync_client_opts(raw_merged, module_opts, opts)}
     end
+  end
+
+  defp merge_opts_layer(lower_opts, higher_opts) do
+    lower_opts
+    |> maybe_drop_shadowed_api_keys(higher_opts)
+    |> Keyword.merge(higher_opts)
+  end
+
+  defp maybe_drop_shadowed_api_keys(lower_opts, higher_opts) do
+    has_override? = fn key ->
+      non_blank_secret(Keyword.get(higher_opts, key)) != nil or
+        explicit_blank_opt?(higher_opts, [key])
+    end
+
+    lower_opts
+    |> then(fn kw ->
+      if has_override?.(:api_key) do
+        Keyword.drop(kw, [:typesafe_api_key, :gemini_api_key])
+      else
+        kw
+      end
+    end)
+    |> then(fn kw ->
+      if has_override?.(:typesafe_api_key) or has_override?.(:gemini_api_key) do
+        Keyword.delete(kw, :api_key)
+      else
+        kw
+      end
+    end)
   end
 
   defp validate_runtime_opts(opts) do
@@ -659,11 +690,11 @@ defmodule SystemOneDSL.Runner do
   end
 
   defp has_tier2_cache?(opts) do
-    case Keyword.get(opts, :tier2_cache) do
-      nil -> false
-      mod when is_atom(mod) -> true
-    end
+    normalize_cache_adapter(Keyword.get(opts, :tier2_cache)) != nil
   end
+
+  defp normalize_cache_adapter(mod) when is_atom(mod) and not is_boolean(mod), do: mod
+  defp normalize_cache_adapter(_), do: nil
 
   defp build_optional_client(opts) do
     cache_only? = Keyword.get(opts, :cache_only, false)
@@ -810,8 +841,8 @@ defmodule SystemOneDSL.Runner do
   end
 
   defp build_cache_ctx(contract_key, opts) do
-    l1 = Keyword.get(opts, :cache, SystemOneDSL.Cache.ETS)
-    l2 = Keyword.get(opts, :tier2_cache)
+    l1 = normalize_cache_adapter(Keyword.get(opts, :cache, SystemOneDSL.Cache.ETS))
+    l2 = normalize_cache_adapter(Keyword.get(opts, :tier2_cache))
 
     %{
       contract_key: contract_key,
@@ -944,7 +975,7 @@ defmodule SystemOneDSL.Runner do
         classify_many_item(item, acc, l1_hits, existing_l2_for_l1, l2_hits, ctx)
       end)
 
-    {cached_map, Enum.reverse(rev_misses), Enum.reverse(rev_bf)}
+    {cached_map, Enum.reverse(rev_misses), Enum.uniq_by(Enum.reverse(rev_bf), &elem(&1, 0))}
   end
 
   defp preload_l2_maps(indexed_states, l1_hits, ctx) do
@@ -1027,20 +1058,22 @@ defmodule SystemOneDSL.Runner do
   end
 
   defp execute_many_misses(misses, cached_map, client, prep, ctx) do
-    miss_states = Enum.map(misses, fn {_idx, st, _hk} -> st end)
+    unique_misses = Enum.uniq_by(misses, &elem(&1, 2))
+    miss_states = Enum.map(unique_misses, fn {_idx, st, _hk} -> st end)
 
     live_results =
       SystemOneSDK.evaluate_many(client, miss_states, prep, build_batch_sdk_opts(ctx.opts))
 
-    {updated_map, to_persist} =
-      Enum.zip(misses, live_results)
-      |> Enum.reduce({cached_map, []}, fn {{idx, st, hash_key}, res}, {acc, persist_acc} ->
+    {results_by_hk, to_persist} =
+      Enum.zip(unique_misses, live_results)
+      |> Enum.reduce({%{}, []}, fn {{_idx, st, hash_key}, res}, {res_acc, persist_acc} ->
         Cache.adapter_put(ctx.l1, hash_key, res, ctx.l1_opts)
+        next_res = Map.put(res_acc, hash_key, res)
 
         if ctx.persist_l2? and Cache.persistable?(res, ctx.opts) do
-          {Map.put(acc, idx, res), [{hash_key, ctx.contract_key, st, res} | persist_acc]}
+          {next_res, [{hash_key, ctx.contract_key, st, res} | persist_acc]}
         else
-          {Map.put(acc, idx, res), persist_acc}
+          {next_res, persist_acc}
         end
       end)
 
@@ -1048,6 +1081,8 @@ defmodule SystemOneDSL.Runner do
       Cache.adapter_put_many(ctx.l2, Enum.reverse(to_persist), ctx.l2_opts)
     end
 
-    updated_map
+    Enum.reduce(misses, cached_map, fn {idx, _st, hash_key}, acc ->
+      Map.put(acc, idx, Map.fetch!(results_by_hk, hash_key))
+    end)
   end
 end
