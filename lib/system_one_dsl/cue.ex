@@ -22,7 +22,7 @@ defmodule SystemOneDSL.CUE do
     |> Enum.sort_by(fn {k, _} -> to_string(k) end)
     |> Enum.map_join("\n\n", fn {contract_key, %{questions: questions}} ->
       q_blocks = Enum.map_join(questions, "\n", &format_question/1)
-      "#{contract_key}: {\n#{q_blocks}\n}"
+      "#{format_label(contract_key)}: {\n#{q_blocks}\n}"
     end)
   end
 
@@ -33,7 +33,7 @@ defmodule SystemOneDSL.CUE do
     criteria_section = format_criteria(q.type, q.criteria)
 
     [
-      "  #{q.name}: {",
+      "  #{format_label(q.name)}: {",
       "    type: #{Jason.encode!(to_string(q.type))}",
       "    instructions: #{Jason.encode!(q.instructions)}",
       criteria_section,
@@ -50,7 +50,7 @@ defmodule SystemOneDSL.CUE do
       criteria
       |> Enum.sort_by(fn {ck, _} -> to_string(ck) end)
       |> Enum.map_join("\n", fn {ck, desc} ->
-        "      #{ck}: #{Jason.encode!(desc)}"
+        "      #{format_label(ck)}: #{Jason.encode!(desc)}"
       end)
 
     "    criteria: {\n#{criteria_lines}\n    }"
@@ -68,9 +68,19 @@ defmodule SystemOneDSL.CUE do
   defp format_criteria(_type, pairs) when is_list(pairs) do
     criteria_lines =
       Enum.map_join(pairs, "\n", fn {ck, desc} ->
-        "      #{ck}: #{Jason.encode!(desc)}"
+        "      #{format_label(ck)}: #{Jason.encode!(desc)}"
       end)
 
     "    criteria: {\n#{criteria_lines}\n    }"
+  end
+
+  defp format_label(key) do
+    str = to_string(key)
+
+    if Regex.match?(~r/^[a-zA-Z][a-zA-Z0-9_]*$/, str) do
+      str
+    else
+      Jason.encode!(str)
+    end
   end
 end
