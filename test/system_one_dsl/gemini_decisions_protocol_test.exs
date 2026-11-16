@@ -1,11 +1,11 @@
-defmodule JevDSL.GeminiDecisionsProtocolTest do
+defmodule SystemOneDSL.GeminiDecisionsProtocolTest do
   use ExUnit.Case, async: true
 
-  alias JevDSL.Providers.GeminiDecisions.Protocol
+  alias SystemOneDSL.Providers.GeminiDecisions.Protocol
 
   defmodule SampleContracts do
-    use JevDSL,
-      otp_app: :jev_dsl,
+    use SystemOneDSL,
+      otp_app: :system_one_dsl,
       backend: :gemini_decisions
 
     defnoul :is_spam do
@@ -145,13 +145,13 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert resp.usage.input_tokens == 93
       assert resp.usage.output_tokens == 0
 
-      assert {:ok, %{noul: 0.99}} = JevDSL.fetch_answer(resp, :urgent)
-      assert {:ok, prio} = JevDSL.fetch_answer(resp, :priority)
-      assert JevDSL.choice?(prio, :p0)
-      assert {:ok, 0.95} = JevDSL.probability(prio, :p0)
-      assert {:ok, clarity} = JevDSL.fetch_answer(resp, :clarity)
+      assert {:ok, %{noul: 0.99}} = SystemOneDSL.fetch_answer(resp, :urgent)
+      assert {:ok, prio} = SystemOneDSL.fetch_answer(resp, :priority)
+      assert SystemOneDSL.choice?(prio, :p0)
+      assert {:ok, 0.95} = SystemOneDSL.probability(prio, :p0)
+      assert {:ok, clarity} = SystemOneDSL.fetch_answer(resp, :clarity)
       assert clarity.score == 0.91
-      assert JevDSL.Cache.persistable?({:ok, resp}, [])
+      assert SystemOneDSL.Cache.persistable?({:ok, resp}, [])
     end
 
     test "decodes native /v1beta/decisions map-keyed response with total_input_tokens and confidence" do
@@ -178,9 +178,9 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert resp.model == "gemini-decision-1"
       assert resp.usage.input_tokens == 94
       assert resp.usage.output_tokens == 0
-      assert {:ok, prio} = JevDSL.fetch_answer(resp, :priority)
-      assert JevDSL.choice?(prio, :p2)
-      assert JevDSL.Cache.resolve_ttl({:ok, resp}, min_confidence: 0.65) == {:ok, 300}
+      assert {:ok, prio} = SystemOneDSL.fetch_answer(resp, :priority)
+      assert SystemOneDSL.choice?(prio, :p2)
+      assert SystemOneDSL.Cache.resolve_ttl({:ok, resp}, min_confidence: 0.65) == {:ok, 300}
     end
 
     test "decodes single-question flat confidence/probability response" do
@@ -193,7 +193,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       }
 
       assert {:ok, resp} = Protocol.decode_response(body, prep, "gemini-decision-1")
-      assert {:ok, %{noul: 0.9797708352463237}} = JevDSL.fetch_answer(resp, :is_spam)
+      assert {:ok, %{noul: 0.9797708352463237}} = SystemOneDSL.fetch_answer(resp, :is_spam)
       assert resp.usage.input_tokens == 94
       assert resp.usage.output_tokens == 0
     end
@@ -201,7 +201,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
     test "returns structured error on malformed response body" do
       prep = SampleContracts.prepared(:is_spam)
 
-      assert {:error, %JevDSL.Error{}} =
+      assert {:error, %SystemOneDSL.Error{}} =
                Protocol.decode_response("not a map", prep, "gemini-decision-1")
     end
   end

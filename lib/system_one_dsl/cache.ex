@@ -1,7 +1,7 @@
-defmodule JevDSL.Cache do
+defmodule SystemOneDSL.Cache do
   @moduledoc """
   Deterministic identity hashing, confidence-aware cacheability rules, and pluggable
-  two-tier (L1 fast key-value + L2 durable store) caching behaviour for `JevDSL`.
+  two-tier (L1 fast key-value + L2 durable store) caching behaviour for `SystemOneDSL`.
 
   ## Cache Key Invariance & Auto-Invalidation
 
@@ -11,20 +11,20 @@ defmodule JevDSL.Cache do
      instructions, question types, and criteria.
 
   Because `prepared.fingerprint` changes whenever a prompt or criterion is edited in `defnoul`,
-  `defchoice`, `defscore`, or `defjev`, stale cached evaluations are invalidated automatically
+  `defchoice`, `defscore`, `defcontract`, or `defjev`, stale cached evaluations are invalidated automatically
   at compile time without manual cache flushing.
 
   ## Telemetry Events
 
-  `JevDSL.Cache` emits the following `:telemetry` events:
-  * `[:jev_dsl, :cache, :hit]` — Measurements: `%{duration: native_time}`. Metadata: `%{cache_key: String.t(), adapter: module(), tier: :l1 | :l2, contract: atom() | String.t() | nil}`.
-  * `[:jev_dsl, :cache, :miss]` — Measurements: `%{duration: native_time}`. Metadata: `%{cache_key: String.t(), adapter: module(), tier: :l1 | :l2, contract: atom() | String.t() | nil}`.
-  * `[:jev_dsl, :cache, :write]` — Measurements: `%{duration: native_time}`. Metadata: `%{cache_key: String.t(), adapter: module(), tier: :l1 | :l2, contract: atom() | String.t() | nil}`.
+  `SystemOneDSL.Cache` emits the following `:telemetry` events:
+  * `[:system_one_dsl, :cache, :hit]` — Measurements: `%{duration: native_time}`. Metadata: `%{cache_key: String.t(), adapter: module(), tier: :l1 | :l2, contract: atom() | String.t() | nil}`.
+  * `[:system_one_dsl, :cache, :miss]` — Measurements: `%{duration: native_time}`. Metadata: `%{cache_key: String.t(), adapter: module(), tier: :l1 | :l2, contract: atom() | String.t() | nil}`.
+  * `[:system_one_dsl, :cache, :write]` — Measurements: `%{duration: native_time}`. Metadata: `%{cache_key: String.t(), adapter: module(), tier: :l1 | :l2, contract: atom() | String.t() | nil}`.
 
   ## Implementing a Custom Cache Adapter
 
-      defmodule MyApp.JevCacheAdapter do
-        @behaviour JevDSL.Cache
+      defmodule MyApp.ContractCacheAdapter do
+        @behaviour SystemOneDSL.Cache
 
         @impl true
         def get(key, _opts) do
@@ -66,8 +66,8 @@ defmodule JevDSL.Cache do
 
   ## Examples
 
-      iex> key1 = JevDSL.Cache.key(%{a: 1, b: [%{c: 2}]}, "fp_1")
-      iex> key2 = JevDSL.Cache.key(%{"a" => 1, "b" => [%{"c" => 2}]}, "fp_1")
+      iex> key1 = SystemOneDSL.Cache.key(%{a: 1, b: [%{c: 2}]}, "fp_1")
+      iex> key2 = SystemOneDSL.Cache.key(%{"a" => 1, "b" => [%{"c" => 2}]}, "fp_1")
       iex> key1 == key2
       true
       iex> String.starts_with?(key1, "jev_")
@@ -140,7 +140,7 @@ defmodule JevDSL.Cache do
 
   ## Examples
 
-      iex> JevDSL.Cache.canonicalize(%{a: 1, nested: {%{b: 2}}})
+      iex> SystemOneDSL.Cache.canonicalize(%{a: 1, nested: {%{b: 2}}})
       %{"a" => 1, "nested" => {:__tuple__, [%{"b" => 2}]}}
   """
   @spec canonicalize(term()) :: term()
@@ -257,7 +257,7 @@ defmodule JevDSL.Cache do
   defp answer_confident?(_, _min_conf), do: true
 
   @doc """
-  Reads a key from the given `adapter` module implementing `JevDSL.Cache`.
+  Reads a key from the given `adapter` module implementing `SystemOneDSL.Cache`.
   """
   @spec adapter_get(module() | nil, cache_key(), keyword()) :: {:ok, term()} | :miss
   def adapter_get(nil, _key, _opts), do: :miss
@@ -383,7 +383,7 @@ defmodule JevDSL.Cache do
     duration = System.monotonic_time() - start_t
 
     :telemetry.execute(
-      [:jev_dsl, :cache, event],
+      [:system_one_dsl, :cache, event],
       %{duration: duration},
       %{
         cache_key: key,

@@ -1,11 +1,11 @@
-defmodule JevDSL.Live.GeminiDecisionsLiveTest do
+defmodule SystemOneDSL.Live.GeminiDecisionsLiveTest do
   use ExUnit.Case, async: false
 
   @moduletag :live
 
   defmodule LiveUnifiedContracts do
-    use JevDSL,
-      otp_app: :jev_dsl,
+    use SystemOneDSL,
+      otp_app: :system_one_dsl,
       backend: :gemini_decisions,
       decisions_mode: :unified,
       model: "gemini-decision-1"
@@ -16,8 +16,8 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
   end
 
   defmodule LiveNativeContracts do
-    use JevDSL,
-      otp_app: :jev_dsl,
+    use SystemOneDSL,
+      otp_app: :system_one_dsl,
       backend: :gemini_decisions,
       decisions_mode: :native,
       auth_mode: :x_goog_api_key,
@@ -37,7 +37,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
                cache?: false
              )
 
-    assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(resp, :is_spam)
+    assert {:ok, %{noul: prob}} = SystemOneDSL.fetch_answer(resp, :is_spam)
     assert is_number(prob)
   end
 
@@ -50,7 +50,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
                cache?: false
              )
 
-    assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(resp, :is_spam)
+    assert {:ok, %{noul: prob}} = SystemOneDSL.fetch_answer(resp, :is_spam)
     assert is_number(prob)
   end
 end

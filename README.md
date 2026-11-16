@@ -1,17 +1,17 @@
-# JevDSL
+# SystemOneDSL
 
 [![CI](https://github.com/boxxxie/jev_dsl/actions/workflows/ci.yml/badge.svg)](https://github.com/boxxxie/jev_dsl/actions/workflows/ci.yml)
-[![Hex.pm](https://img.shields.io/hexpm/v/jev_dsl.svg?logo=elixir&logoColor=white)](https://hex.pm/packages/jev_dsl)
-[![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/jev_dsl)
+[![Hex.pm](https://img.shields.io/hexpm/v/system_one_dsl.svg?logo=elixir&logoColor=white)](https://hex.pm/packages/system_one_dsl)
+[![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/system_one_dsl)
 [![Elixir](https://img.shields.io/badge/Elixir-~%3E%201.19-4B275F.svg?logo=elixir&logoColor=white)](https://elixir-lang.org)
 [![SystemOneSDK](https://img.shields.io/badge/SystemOneSDK-~%3E%200.6.0-3882D2.svg)](https://hex.pm/packages/system_one_sdk)
 [![Gemini Decisions](https://img.shields.io/badge/Gemini-gemini--decision--1-4285F4.svg?logo=googlegemini&logoColor=white)](#gemini-decisions-api-gemini-decision-1)
-[![Cache](https://img.shields.io/badge/cache-L1%20ETS%20%2B%20L2-orange.svg)](lib/jev_dsl/cache.ex)
+[![Cache](https://img.shields.io/badge/cache-L1%20ETS%20%2B%20L2-orange.svg)](lib/system_one_dsl/cache.ex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Declarative Elixir DSL and two-tier caching layer for [TypeSafe Jev (`SystemOneSDK`)](https://hex.pm/packages/system_one_sdk).**
+**Declarative Elixir DSL and two-tier caching layer for [`SystemOneSDK`](https://hex.pm/packages/system_one_sdk) (TypeSafe Jev) and compatible decision backends (`gemini-decision-1`).**
 
-Write semantic judgment contracts (`defnoul`, `defchoice`, `defscore`, `defjev`) as clean Elixir macros. `JevDSL` validates every contract at compile time, caches wire payloads in `:persistent_term`, and provides content-addressed L1/L2 caching out of the box.
+Write semantic judgment contracts (`defnoul`, `defchoice`, `defscore`, `defcontract` / `defjev`) as clean Elixir macros. `SystemOneDSL` validates every contract at compile time, caches wire payloads in `:persistent_term`, and provides content-addressed L1/L2 caching out of the box.
 
 ---
 
@@ -19,14 +19,15 @@ Write semantic judgment contracts (`defnoul`, `defchoice`, `defscore`, `defjev`)
 
 | Feature | Highlights |
 | :--- | :--- |
-| **Compile-Time DSL** | Define `defnoul`, `defchoice`, `defscore`, `defjev`, and `defalias` blocks validated at build time via `SystemOneSDK.prepare/1`. Invalid rubrics or broken aliases raise a `CompileError` with exact file and line numbers. |
+| **Compile-Time DSL** | Define `defnoul`, `defchoice`, `defscore`, `defcontract` (`defjev`), and `defalias` blocks validated at build time via `SystemOneSDK.prepare/1`. Invalid rubrics or broken aliases raise a `CompileError` with exact file and line numbers. |
 | **Predictable Atom Keys** | Choice clauses (`positive -> "..."`) compile to atoms (`:positive`) in declaration order for clean pattern matching. Contract lookups and helpers (`fetch_answer/2`, `choice?/2`, `probability/2`) accept both atoms and strings. |
 | **Zero-Copy Wire Payloads** | Pre-encoded `Jason.Fragment` payloads are rehydrated once and stored in `:persistent_term` for `O(1)` access across all BEAM processes. |
-| **Content-Addressed Cache** | SHA-256 cache keys (`"jev_<sha256>"`) combine the canonicalized input `state` with the contract's `Prepared.fingerprint`. Editing a prompt or rubric automatically invalidates stale entries. |
+| **Content-Addressed Cache** | SHA-256 cache keys (`"jev_<sha256>"`) combine the canonicalized input `state` with the contract's `Prepared.fingerprint` and backend/mode/model identity. Editing a prompt or rubric automatically invalidates stale entries. |
 | **Confidence-Gated TTLs** | High-confidence judgments (`>= 0.65`) cache for the full TTL (7 days), ambiguous judgments (`< 0.65`) cache for 5 minutes, and transient errors are never cached. |
-| **Two-Tier L1 + L2 Runner** | Built-in ETS L1 cache (`JevDSL.Cache.ETS`) plus pluggable L2 storage (`get_many/2` / `put_many/2`) with automatic L2 → L1 warming, L1 → L2 backfill, and `cache_only: true` offline replay. |
+| **Two-Tier L1 + L2 Runner** | Built-in ETS L1 cache (`SystemOneDSL.Cache.ETS`) plus pluggable L2 storage (`get_many/2` / `put_many/2`) with automatic L2 → L1 warming, L1 → L2 backfill, and `cache_only: true` offline replay. |
+| **Multi-Backend Support** | Route contracts to TypeSafe Jev (`:system_one`) or Google's Gemini Decisions API (`:gemini_decisions`, unified `/v1/decisions` or native `/v1beta/decisions`). |
 | **First-Class Testing** | Test deterministically with `SystemOneSDK.Test.client()` transport stubs, 1-arity `:eval_fn` mocks, or offline cache fixtures. |
-| **Igniter & CUE Tooling** | Install in one command with `mix igniter.install jev_dsl` and export contracts to deterministic CUE schemas via `__export_cue__/0`. |
+| **Igniter & CUE Tooling** | Install in one command with `mix igniter.install system_one_dsl` and export contracts to deterministic CUE schemas via `__export_cue__/0`. |
 
 ---
 
@@ -35,24 +36,24 @@ Write semantic judgment contracts (`defnoul`, `defchoice`, `defscore`, `defjev`)
 Install via [Igniter](https://hex.pm/packages/igniter):
 
 ```bash
-mix igniter.install jev_dsl --module MyApp.TriageContracts --yes
+mix igniter.install system_one_dsl --module MyApp.TriageContracts --yes
 ```
 
-Or add `jev_dsl` manually to your dependencies in `mix.exs`:
+Or add `system_one_dsl` manually to your dependencies in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:jev_dsl, "~> 0.1.0"}
+    {:system_one_dsl, "~> 0.1.0"}
   ]
 end
 ```
 
-And add `:jev_dsl` to `import_deps` in your `.formatter.exs`:
+And add `:system_one_dsl` to `import_deps` in your `.formatter.exs`:
 
 ```elixir
 [
-  import_deps: [:jev_dsl],
+  import_deps: [:system_one_dsl],
   inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]
 ]
 ```
@@ -61,13 +62,13 @@ And add `:jev_dsl` to `import_deps` in your `.formatter.exs`:
 
 ## Quick Start
 
-Define a contract module with `use JevDSL`:
+Define a contract module with `use SystemOneDSL`:
 
 ```elixir
 defmodule MyApp.TriageContracts do
-  use JevDSL,
+  use SystemOneDSL,
     otp_app: :my_app,
-    cache: JevDSL.Cache.ETS
+    cache: SystemOneDSL.Cache.ETS
 
   # 1. Single Noul (boolean probability 0.0..1.0)
   defnoul :is_spam do
@@ -97,8 +98,8 @@ defmodule MyApp.TriageContracts do
     complete -> "All identity, contact, and biographical fields are populated."
   end
 
-  # 4. Multi-question contract evaluated in a single request
-  defjev :ticket_triage do
+  # 4. Multi-question contract evaluated in a single request (`defjev` is also supported)
+  defcontract :ticket_triage do
     noul :requires_escalation do
       "Does this issue require immediate engineering escalation?"
     end
@@ -125,7 +126,7 @@ end
 
 ## Evaluating Contracts
 
-Every `use JevDSL` module automatically generates `evaluate/3`, `evaluate!/3`, `evaluate_many/3`, `available?/2`, `cache_key/2`, `contract/1`, `prepared/1`, `has_contract?/1`, `contract_fingerprint/1`, `__contracts__/0`, and `__export_cue__/0`:
+Every `use SystemOneDSL` module automatically generates `evaluate/3`, `evaluate!/3`, `evaluate_many/3`, `available?/2`, `cache_key/2`, `contract/1`, `prepared/1`, `has_contract?/1`, `contract_fingerprint/1`, `__contracts__/0`, and `__export_cue__/0`:
 
 ```elixir
 # Single evaluation (choice answers return atoms: response.answers.tone.choice == :positive)
@@ -139,9 +140,9 @@ Every `use JevDSL` module automatically generates `evaluate/3`, `evaluate!/3`, `
 %{choice: :positive, probabilities: %{positive: prob}} = response.answers.tone
 
 # Or use answer helpers:
-{:ok, tone} = JevDSL.fetch_answer(response, :tone)
-true = JevDSL.choice?(tone, :positive)
-{:ok, ^prob} = JevDSL.probability(tone, :positive)
+{:ok, tone} = SystemOneDSL.fetch_answer(response, :tone)
+true = SystemOneDSL.choice?(tone, :positive)
+{:ok, ^prob} = SystemOneDSL.probability(tone, :positive)
 
 # Concurrent batch evaluation (resolves L1/L2 cache hits via get_many/2 first, dispatches only misses)
 results =
@@ -162,22 +163,22 @@ config :my_app, MyApp.TriageContracts,
   base_url: System.get_env("TYPESAFE_BASE_URL")
 ```
 
-To supervise the ETS L1 cache with automatic periodic TTL pruning, add `JevDSL.Cache.ETS` to your application supervision tree:
+To supervise the ETS L1 cache with automatic periodic TTL pruning, add `SystemOneDSL.Cache.ETS` to your application supervision tree:
 
 ```elixir
 children = [
-  {JevDSL.Cache.ETS, name: MyApp.JevCache, table: :jev_dsl_ets_cache}
+  {SystemOneDSL.Cache.ETS, name: MyApp.ContractCache, table: :system_one_dsl_ets_cache}
 ]
 ```
 
 ### Gemini Decisions API (`gemini-decision-1`)
 
-`JevDSL` also supports Google's **Gemini Decisions API** (`gemini-decision-1`) via both LiteLLM's unified `/v1/decisions` endpoint and native `/v1beta/decisions` (or `/gemini/v1beta/decisions` passthrough):
+`SystemOneDSL` also supports Google's **Gemini Decisions API** (`gemini-decision-1`) via both LiteLLM's unified `/v1/decisions` endpoint and native `/v1beta/decisions` (or `/gemini/v1beta/decisions` passthrough):
 
 ```elixir
 # LiteLLM unified /v1/decisions (Authorization: Bearer)
 defmodule MyApp.UnifiedGeminiContracts do
-  use JevDSL,
+  use SystemOneDSL,
     otp_app: :my_app,
     backend: :gemini_decisions,
     decisions_mode: :unified,
@@ -191,7 +192,7 @@ end
 
 # Native /gemini/v1beta/decisions passthrough (x-goog-api-key)
 defmodule MyApp.NativeGeminiContracts do
-  use JevDSL,
+  use SystemOneDSL,
     otp_app: :my_app,
     backend: :gemini_decisions,
     decisions_mode: :native,
@@ -209,17 +210,17 @@ API keys for `:gemini_decisions` are resolved from `:gemini_api_key` / `:api_key
 
 ---
 
-## Custom L1 & Tier-2 Cache Adapters (`JevDSL.Cache`)
+## Custom L1 & Tier-2 Cache Adapters (`SystemOneDSL.Cache`)
 
-By default, `JevDSL` caches evaluations in [`JevDSL.Cache.ETS`](lib/jev_dsl/cache/ets.ex). You can plug in your own L1 cache (e.g., Memcached/Cachex/Redis) and/or a persistent Tier-2 cache (e.g., DuckDB, Parquet, or Postgres) by implementing `@behaviour JevDSL.Cache`:
+By default, `SystemOneDSL` caches evaluations in [`SystemOneDSL.Cache.ETS`](lib/system_one_dsl/cache/ets.ex). You can plug in your own L1 cache (e.g., Memcached/Cachex/Redis) and/or a persistent Tier-2 cache (e.g., DuckDB, Parquet, or Postgres) by implementing `@behaviour SystemOneDSL.Cache`:
 
 ```elixir
 defmodule MyApp.Tier2ParquetCache do
-  @behaviour JevDSL.Cache
+  @behaviour SystemOneDSL.Cache
 
   @impl true
   def get(cache_key, _opts) do
-    case MyApp.Lakehouse.lookup_jev_hash(cache_key) do
+    case MyApp.Lakehouse.lookup_decision_hash(cache_key) do
       {:ok, response} -> {:ok, response}
       :miss -> :miss
     end
@@ -227,7 +228,7 @@ defmodule MyApp.Tier2ParquetCache do
 
   @impl true
   def get_many(cache_keys, _opts) do
-    MyApp.Lakehouse.lookup_jev_hashes(cache_keys)
+    MyApp.Lakehouse.lookup_decision_hashes(cache_keys)
   end
 
   @impl true
@@ -238,7 +239,7 @@ defmodule MyApp.Tier2ParquetCache do
   @impl true
   def put_many(entries, _opts) do
     # Each entry is {cache_key, contract_key, state, result}
-    MyApp.Lakehouse.append_jev_evaluations(entries)
+    MyApp.Lakehouse.append_decision_evaluations(entries)
     :ok
   end
 end
@@ -248,7 +249,7 @@ end
 
 ## Testing & Mocking
 
-`JevDSL` supports three complementary testing modes:
+`SystemOneDSL` supports three complementary testing modes:
 
 1. **`SystemOneSDK.Test` Transport Stubs (Full Wire + Semantic Validation)**:
    ```elixir

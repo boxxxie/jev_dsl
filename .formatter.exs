@@ -7,6 +7,7 @@ locals_without_parens = [
   defscore: 2,
   defscore: 3,
   defjev: 2,
+  defcontract: 2,
   defalias: 2,
   noul: 1,
   noul: 2,

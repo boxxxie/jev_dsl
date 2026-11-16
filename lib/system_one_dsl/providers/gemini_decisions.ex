@@ -1,4 +1,4 @@
-defmodule JevDSL.Providers.GeminiDecisions do
+defmodule SystemOneDSL.Providers.GeminiDecisions do
   @moduledoc """
   `SystemOneSDK.Provider` implementation for the Gemini Decisions API (`gemini-decision-1`).
 
@@ -10,8 +10,8 @@ defmodule JevDSL.Providers.GeminiDecisions do
 
   @behaviour SystemOneSDK.Provider
 
-  alias JevDSL.Error
-  alias JevDSL.Providers.GeminiDecisions.Protocol
+  alias SystemOneDSL.Error
+  alias SystemOneDSL.Providers.GeminiDecisions.Protocol
   alias SystemOneSDK.{ListModelsResponse, Prepared, RetryPolicy}
 
   @default_unified_base_url "http://100.88.180.12:4000"

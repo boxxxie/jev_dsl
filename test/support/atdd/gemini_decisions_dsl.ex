@@ -1,9 +1,9 @@
-defmodule JevDSL.ATDD.GeminiDecisionsDSL do
+defmodule SystemOneDSL.ATDD.GeminiDecisionsDSL do
   @moduledoc false
 
   import ExUnit.Assertions
 
-  alias JevDSL.ATDD.GeminiDecisionsDriver, as: Driver
+  alias SystemOneDSL.ATDD.GeminiDecisionsDriver, as: Driver
 
   def given_decision_backend(contract_mod, opts \\ []) do
     {l1, l2} = Driver.unique_ets_tables()
@@ -48,16 +48,16 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
 
   def then_choice_is(ctx, question_key, expected_choice, min_prob \\ 0.0) do
     assert {:ok, response} = ctx.last_result
-    assert {:ok, answer} = JevDSL.fetch_answer(response, question_key)
-    assert JevDSL.choice?(answer, expected_choice)
-    assert {:ok, prob} = JevDSL.probability(answer, expected_choice)
+    assert {:ok, answer} = SystemOneDSL.fetch_answer(response, question_key)
+    assert SystemOneDSL.choice?(answer, expected_choice)
+    assert {:ok, prob} = SystemOneDSL.probability(answer, expected_choice)
     assert prob >= min_prob
     ctx
   end
 
   def then_noul_is(ctx, question_key, min_prob) do
     assert {:ok, response} = ctx.last_result
-    assert {:ok, %{noul: prob}} = JevDSL.fetch_answer(response, question_key)
+    assert {:ok, %{noul: prob}} = SystemOneDSL.fetch_answer(response, question_key)
     assert prob >= min_prob
     ctx
   end
@@ -69,8 +69,8 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
     Enum.zip(ctx.last_batch, expected_choices)
     |> Enum.each(fn {res, expected} ->
       assert {:ok, response} = res
-      assert {:ok, answer} = JevDSL.fetch_answer(response, question_key)
-      assert JevDSL.choice?(answer, expected)
+      assert {:ok, answer} = SystemOneDSL.fetch_answer(response, question_key)
+      assert SystemOneDSL.choice?(answer, expected)
     end)
 
     ctx

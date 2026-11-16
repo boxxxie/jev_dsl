@@ -1,16 +1,16 @@
-defmodule JevDSL.Cache.ETS do
+defmodule SystemOneDSL.Cache.ETS do
   @moduledoc """
-  Built-in zero-dependency ETS cache adapter implementing `JevDSL.Cache`.
+  Built-in zero-dependency ETS cache adapter implementing `SystemOneDSL.Cache`.
 
-  Provides concurrent read/write access with monotonic TTL expiration so `JevDSL`
+  Provides concurrent read/write access with monotonic TTL expiration so `SystemOneDSL`
   works out of the box in any Elixir application without external cache dependencies.
 
   ## Supervision & ETS Table Ownership
 
-  `JevDSL.Cache.ETS` can be used in two modes:
+  `SystemOneDSL.Cache.ETS` can be used in two modes:
 
   1. **Supervised Mode (Recommended for Production & `async: true` Tests):**
-     Add `{JevDSL.Cache.ETS, name: MyApp.JevCache, table: :my_app_jev_cache}` to your
+     Add `{SystemOneDSL.Cache.ETS, name: MyApp.ContractCache, table: :my_app_contract_cache}` to your
      application's supervision tree (or `start_supervised!/1` in tests). The GenServer
      owns the ETS table and periodically prunes expired keys.
 
@@ -21,12 +21,12 @@ defmodule JevDSL.Cache.ETS do
   """
 
   use GenServer
-  @behaviour JevDSL.Cache
+  @behaviour SystemOneDSL.Cache
 
-  @default_table :jev_dsl_ets_cache
+  @default_table :system_one_dsl_ets_cache
   @default_ttl 3600 * 24 * 7
   @default_cleanup_interval :timer.minutes(5)
-  @heir_name :jev_dsl_ets_heir
+  @heir_name :system_one_dsl_ets_heir
 
   @start_schema NimbleOptions.new!(
                   name: [
@@ -48,7 +48,7 @@ defmodule JevDSL.Cache.ETS do
 
   @doc """
   Returns a child specification with `:id` scoped to `:name` or `:table` so multiple
-  `JevDSL.Cache.ETS` instances can be supervised in the same tree or test.
+  `SystemOneDSL.Cache.ETS` instances can be supervised in the same tree or test.
   """
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) when is_list(opts) do
@@ -102,7 +102,7 @@ defmodule JevDSL.Cache.ETS do
     :ok
   end
 
-  @impl JevDSL.Cache
+  @impl SystemOneDSL.Cache
   def get(key, opts \\ []) when is_binary(key) do
     table = resolve_table(opts)
     ensure_table(table)
@@ -123,7 +123,7 @@ defmodule JevDSL.Cache.ETS do
     ArgumentError -> :miss
   end
 
-  @impl JevDSL.Cache
+  @impl SystemOneDSL.Cache
   def put(key, value, opts \\ []) when is_binary(key) do
     table = resolve_table(opts)
     ttl = Keyword.get(opts, :ttl, @default_ttl)
@@ -135,7 +135,7 @@ defmodule JevDSL.Cache.ETS do
     ArgumentError -> {:error, :ets_unavailable}
   end
 
-  @impl JevDSL.Cache
+  @impl SystemOneDSL.Cache
   def get_many(keys, opts \\ []) when is_list(keys) do
     Enum.reduce(keys, %{}, fn key, acc ->
       case get(key, opts) do
@@ -145,7 +145,7 @@ defmodule JevDSL.Cache.ETS do
     end)
   end
 
-  @impl JevDSL.Cache
+  @impl SystemOneDSL.Cache
   def put_many(entries, opts \\ []) when is_list(entries) do
     table = resolve_table(opts)
     ttl = Keyword.get(opts, :ttl, @default_ttl)

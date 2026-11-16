@@ -1,20 +1,20 @@
-defmodule JevDSLTest do
+defmodule SystemOneDSLTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
   import Igniter.Test
 
-  alias JevDSL.{Cache, Contract, Error, Question}
-  alias JevDSL.Cache.ETS
+  alias SystemOneDSL.{Cache, Contract, Error, Question}
+  alias SystemOneDSL.Cache.ETS
 
-  doctest JevDSL
-  doctest JevDSL.Cache
-  doctest JevDSL.CUE
+  doctest SystemOneDSL
+  doctest SystemOneDSL.Cache
+  doctest SystemOneDSL.CUE
 
   defmodule TestTier2Cache do
-    @behaviour JevDSL.Cache
+    @behaviour SystemOneDSL.Cache
 
-    @default_table :jev_dsl_test_tier2_ets
+    @default_table :system_one_dsl_test_tier2_ets
 
     @impl true
     def get(key, opts) do
@@ -42,10 +42,10 @@ defmodule JevDSLTest do
   end
 
   defmodule SampleContracts do
-    use JevDSL,
-      otp_app: :jev_dsl,
-      cache: JevDSL.Cache.ETS,
-      tier2_cache: JevDSLTest.TestTier2Cache
+    use SystemOneDSL,
+      otp_app: :system_one_dsl,
+      cache: SystemOneDSL.Cache.ETS,
+      tier2_cache: SystemOneDSLTest.TestTier2Cache
 
     defnoul :is_spam, as: :spam_detected do
       """
@@ -101,6 +101,12 @@ defmodule JevDSLTest do
       end
     end
 
+    defcontract :contract_bundle do
+      noul :is_valid do
+        "Is this submission valid?"
+      end
+    end
+
     defalias(:legacy_triage, :ticket_triage)
     defalias("string_triage_alias", "ticket_triage")
   end
@@ -124,10 +130,10 @@ defmodule JevDSLTest do
     {:ok, cache_opts: [ets_table: l1_table, tier2_ets_table: l2_table]}
   end
 
-  describe "JevDSL compile-time contract compilation & atom/string interoperability" do
-    test "compiles defnoul, defchoice, defscore, defjev, and defalias into typed %JevDSL.Contract{} structs" do
+  describe "SystemOneDSL compile-time contract compilation & atom/string interoperability" do
+    test "compiles defnoul, defchoice, defscore, defcontract, defjev, and defalias into typed %SystemOneDSL.Contract{} structs" do
       contracts = SampleContracts.__contracts__()
-      assert map_size(contracts) == 8
+      assert map_size(contracts) == 9
 
       for key <- [
             :is_spam,
@@ -136,6 +142,7 @@ defmodule JevDSLTest do
             :csv_column_mapping,
             :completeness,
             :ticket_triage,
+            :contract_bundle,
             :legacy_triage,
             :string_triage_alias
           ] do
@@ -184,10 +191,10 @@ defmodule JevDSLTest do
     end
 
     test "raises CompileError on duplicate contracts, invalid options, or broken aliases" do
-      assert_raise CompileError, ~r/Duplicate JevDSL contract :dup/, fn ->
+      assert_raise CompileError, ~r/Duplicate SystemOneDSL contract :dup/, fn ->
         Code.compile_string("""
-        defmodule JevDSLTest.DupContracts do
-          use JevDSL
+        defmodule SystemOneDSLTest.DupContracts do
+          use SystemOneDSL
           defnoul :dup do "First" end
           defnoul :dup do "Second" end
         end
@@ -196,8 +203,8 @@ defmodule JevDSLTest do
 
       assert_raise CompileError, ~r/requires 2\.\.255 entries/, fn ->
         Code.compile_string("""
-        defmodule JevDSLTest.SingleChoiceContract do
-          use JevDSL
+        defmodule SystemOneDSLTest.SingleChoiceContract do
+          use SystemOneDSL
           defchoice :bad_choice, ask: "Pick one" do
             only_one -> "Not enough options"
           end
@@ -207,8 +214,8 @@ defmodule JevDSLTest do
 
       assert_raise CompileError, ~r/references unknown contract :missing_target/, fn ->
         Code.compile_string("""
-        defmodule JevDSLTest.BadAliasContract do
-          use JevDSL
+        defmodule SystemOneDSLTest.BadAliasContract do
+          use SystemOneDSL
           defnoul :valid do "Valid?" end
           defalias :broken, :missing_target
         end
@@ -217,8 +224,8 @@ defmodule JevDSLTest do
 
       assert_raise CompileError, ~r/conflicts with an existing contract/, fn ->
         Code.compile_string("""
-        defmodule JevDSLTest.ConflictingAliasContract do
-          use JevDSL
+        defmodule SystemOneDSLTest.ConflictingAliasContract do
+          use SystemOneDSL
           defnoul :existing do "Valid?" end
           defalias :existing, :existing
         end
@@ -227,7 +234,7 @@ defmodule JevDSLTest do
     end
   end
 
-  describe "JevDSL.Cache deterministic hashing, property invariants & ETS resilience" do
+  describe "SystemOneDSL.Cache deterministic hashing, property invariants & ETS resilience" do
     property "canonicalize/1 and key/3 produce identical hashes for atom-keyed and string-keyed maps/tuples" do
       check all(
               text <- string(:printable, max_length: 40),
@@ -330,7 +337,7 @@ defmodule JevDSLTest do
     end
   end
 
-  describe "JevDSL.Runner evaluation, SystemOneSDK.Test transport, and L1/L2 cache orchestration" do
+  describe "SystemOneDSL.Runner evaluation, SystemOneSDK.Test transport, and L1/L2 cache orchestration" do
     test "executes end-to-end through SystemOneSDK.Test transport and caches atom-keyed responses",
          %{cache_opts: cache_opts} do
       client = SystemOneSDK.Test.client()
@@ -353,12 +360,12 @@ defmodule JevDSLTest do
 
       assert resp.answers.tone.choice == :positive
       assert resp.answers.tone.probabilities.positive == 0.91
-      assert {:ok, tone_ans} = JevDSL.fetch_answer(resp, :tone)
-      assert {:ok, ^tone_ans} = JevDSL.fetch_answer(resp, "tone")
-      assert JevDSL.choice?(tone_ans, :positive)
-      assert JevDSL.choice?(tone_ans, "positive")
-      assert {:ok, 0.91} = JevDSL.probability(tone_ans, :positive)
-      assert {:ok, 0.91} = JevDSL.probability(tone_ans, "positive")
+      assert {:ok, tone_ans} = SystemOneDSL.fetch_answer(resp, :tone)
+      assert {:ok, ^tone_ans} = SystemOneDSL.fetch_answer(resp, "tone")
+      assert SystemOneDSL.choice?(tone_ans, :positive)
+      assert SystemOneDSL.choice?(tone_ans, "positive")
+      assert {:ok, 0.91} = SystemOneDSL.probability(tone_ans, :positive)
+      assert {:ok, 0.91} = SystemOneDSL.probability(tone_ans, "positive")
 
       # Second call hits L1 cache without another HTTP call
       {:ok, cached_resp} =
@@ -375,7 +382,7 @@ defmodule JevDSLTest do
       SystemOneSDK.Test.close(client)
     end
 
-    test "supports cache_only: true, evaluate!/3 structured JevDSL.Error exceptions, and unknown contract checks",
+    test "supports cache_only: true, evaluate!/3 structured SystemOneDSL.Error exceptions, and unknown contract checks",
          %{cache_opts: cache_opts} do
       opts = [cache_only: true] ++ cache_opts
 
@@ -389,7 +396,7 @@ defmodule JevDSLTest do
       assert SampleContracts.evaluate(:nonexistent_contract, %{text: "x"}, opts) ==
                {:error, {:unknown_contract, :nonexistent_contract}}
 
-      assert_raise Error, ~r/Unknown JevDSL contract :nonexistent_contract/, fn ->
+      assert_raise Error, ~r/Unknown SystemOneDSL contract :nonexistent_contract/, fn ->
         SampleContracts.evaluate!(:nonexistent_contract, %{text: "x"}, opts)
       end
 
@@ -471,9 +478,9 @@ defmodule JevDSLTest do
       :telemetry.attach_many(
         handler_id,
         [
-          [:jev_dsl, :evaluate, :stop],
-          [:jev_dsl, :cache, :write],
-          [:jev_dsl, :cache, :hit]
+          [:system_one_dsl, :evaluate, :stop],
+          [:system_one_dsl, :cache, :write],
+          [:system_one_dsl, :cache, :hit]
         ],
         &__MODULE__.handle_telemetry/4,
         test_pid
@@ -481,8 +488,8 @@ defmodule JevDSLTest do
 
       on_exit(fn -> :telemetry.detach(handler_id) end)
 
-      Application.put_env(:jev_dsl, SampleContracts, api_key: "app-config-key")
-      on_exit(fn -> Application.delete_env(:jev_dsl, SampleContracts) end)
+      Application.put_env(:system_one_dsl, SampleContracts, api_key: "app-config-key")
+      on_exit(fn -> Application.delete_env(:system_one_dsl, SampleContracts) end)
 
       assert SampleContracts.available?(cache_opts)
 
@@ -495,17 +502,17 @@ defmodule JevDSLTest do
       assert {:ok, _} =
                SampleContracts.evaluate(:is_spam, state, [client: client] ++ cache_opts)
 
-      assert_receive {:telemetry_event, [:jev_dsl, :cache, :write], %{duration: _},
+      assert_receive {:telemetry_event, [:system_one_dsl, :cache, :write], %{duration: _},
                       %{tier: :l1, contract: :is_spam}}
 
-      assert_receive {:telemetry_event, [:jev_dsl, :evaluate, :stop], %{duration: _},
+      assert_receive {:telemetry_event, [:system_one_dsl, :evaluate, :stop], %{duration: _},
                       %{module: SampleContracts, contract: :is_spam, status: :ok}}
 
       # Second call hits L1 cache
       assert {:ok, _} =
                SampleContracts.evaluate(:is_spam, state, [client: client] ++ cache_opts)
 
-      assert_receive {:telemetry_event, [:jev_dsl, :cache, :hit], %{duration: _},
+      assert_receive {:telemetry_event, [:system_one_dsl, :cache, :hit], %{duration: _},
                       %{tier: :l1, contract: :is_spam}}
 
       SystemOneSDK.Test.verify!(client)
@@ -513,35 +520,35 @@ defmodule JevDSLTest do
     end
   end
 
-  describe "Mix.Tasks.JevDsl.Install Igniter task" do
-    test "patches .formatter.exs with :jev_dsl and optionally creates a contract module" do
+  describe "Mix.Tasks.SystemOneDsl.Install Igniter task" do
+    test "patches .formatter.exs with :system_one_dsl and optionally creates a contract module" do
       test_project()
-      |> Igniter.compose_task("jev_dsl.install", ["--module", "Test.TriageContracts"])
+      |> Igniter.compose_task("system_one_dsl.install", ["--module", "Test.TriageContracts"])
       |> assert_has_patch(".formatter.exs", """
-      + |  import_deps: [:jev_dsl]
+      + |  import_deps: [:system_one_dsl]
       """)
       |> assert_creates("lib/test/triage_contracts.ex", """
       defmodule Test.TriageContracts do
-        use JevDSL,
+        use SystemOneDSL,
           otp_app: :test,
-          cache: JevDSL.Cache.ETS
+          cache: SystemOneDSL.Cache.ETS
 
         defnoul :is_actionable do
           "Does this item require follow-up action?"
         end
       end
       """)
-      |> assert_has_notice("Created JevDSL contract module Test.TriageContracts.")
+      |> assert_has_notice("Created SystemOneDSL contract module Test.TriageContracts.")
     end
 
     test "is idempotent when run twice" do
       project =
         test_project()
-        |> Igniter.compose_task("jev_dsl.install", ["--module", "Test.TriageContracts"])
+        |> Igniter.compose_task("system_one_dsl.install", ["--module", "Test.TriageContracts"])
         |> apply_igniter!()
 
       project
-      |> Igniter.compose_task("jev_dsl.install", ["--module", "Test.TriageContracts"])
+      |> Igniter.compose_task("system_one_dsl.install", ["--module", "Test.TriageContracts"])
       |> assert_unchanged()
     end
   end

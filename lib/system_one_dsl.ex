@@ -1,12 +1,12 @@
-defmodule JevDSL do
+defmodule SystemOneDSL do
   @moduledoc """
   Compile-time Elixir macro DSL, two-tier caching layer, and execution runner for
-  TypeSafe Jev (`SystemOneSDK`) semantic contracts.
+  `SystemOneSDK` and compatible semantic decision backends (TypeSafe Jev and Gemini Decisions).
 
-  `JevDSL` compiles `%SystemOneSDK.Prepared{}` contracts at build time (`defnoul`,
-  `defchoice`, `defscore`, `defjev`, `defalias`), caches rehydrated `Jason.Fragment`
+  `SystemOneDSL` compiles `%SystemOneSDK.Prepared{}` contracts at build time (`defnoul`,
+  `defchoice`, `defscore`, `defcontract`, `defjev`, `defalias`), caches rehydrated `Jason.Fragment`
   wire payloads in `:persistent_term` in O(1), provides deterministic SHA-256
-  content-addressed L1/L2 caching (`JevDSL.Cache`), and generates `evaluate/3`,
+  content-addressed L1/L2 caching (`SystemOneDSL.Cache`), and generates `evaluate/3`,
   `evaluate!/3`, `evaluate_many/3`, `available?/2`, `cache_key/2`, `contract/1`,
   `prepared/1`, and `__export_cue__/0` directly on your contract module.
 
@@ -17,9 +17,9 @@ defmodule JevDSL do
   ## Quick Start
 
       defmodule MyApp.TriageContracts do
-        use JevDSL,
+        use SystemOneDSL,
           otp_app: :my_app,
-          cache: JevDSL.Cache.ETS
+          cache: SystemOneDSL.Cache.ETS
 
         defnoul :is_spam do
           "Does this message contain unsolicited promotional spam?"
@@ -39,7 +39,7 @@ defmodule JevDSL do
           complete -> "All identity, contact, and biographical fields are populated."
         end
 
-        defjev :ticket_triage do
+        defcontract :ticket_triage do
           noul :requires_escalation do
             "Does this issue require immediate engineering escalation?"
           end
@@ -73,7 +73,7 @@ defmodule JevDSL do
         )
   """
 
-  alias JevDSL.{Cache, Contract, CUE, Question, Runner}
+  alias SystemOneDSL.{Cache, Contract, CUE, Question, Runner}
   alias SystemOneSDK.Question, as: SDKQuestion
 
   @use_schema NimbleOptions.new!(
@@ -83,12 +83,12 @@ defmodule JevDSL do
                 ],
                 cache: [
                   type: :atom,
-                  default: JevDSL.Cache.ETS,
-                  doc: "L1 cache module implementing `JevDSL.Cache`."
+                  default: SystemOneDSL.Cache.ETS,
+                  doc: "L1 cache module implementing `SystemOneDSL.Cache`."
                 ],
                 tier2_cache: [
                   type: :atom,
-                  doc: "Optional persistent L2 cache module implementing `JevDSL.Cache`."
+                  doc: "Optional persistent L2 cache module implementing `SystemOneDSL.Cache`."
                 ],
                 use_tier2_cache: [
                   type: :boolean,
@@ -164,12 +164,12 @@ defmodule JevDSL do
 
   defmacro __using__(opts \\ []) do
     quote do
-      import JevDSL
-      alias JevDSL
-      @jev_dsl_opts JevDSL.__validate_use_opts__!(unquote(opts))
-      Module.register_attribute(__MODULE__, :jev_contracts, accumulate: true)
-      Module.register_attribute(__MODULE__, :jev_aliases, accumulate: true)
-      @before_compile JevDSL
+      import SystemOneDSL
+      alias SystemOneDSL
+      @system_one_dsl_opts SystemOneDSL.__validate_use_opts__!(unquote(opts))
+      Module.register_attribute(__MODULE__, :system_one_contracts, accumulate: true)
+      Module.register_attribute(__MODULE__, :system_one_aliases, accumulate: true)
+      @before_compile SystemOneDSL
     end
   end
 
@@ -200,7 +200,7 @@ defmodule JevDSL do
       end
 
     quote do
-      JevDSL.__register_contract__(
+      SystemOneDSL.__register_contract__(
         __MODULE__,
         unquote(contract_atom),
         [unquote(question_ast)],
@@ -231,7 +231,7 @@ defmodule JevDSL do
       end
 
     quote do
-      JevDSL.__register_contract__(
+      SystemOneDSL.__register_contract__(
         __MODULE__,
         unquote(contract_atom),
         [unquote(question_ast)],
@@ -262,7 +262,7 @@ defmodule JevDSL do
       end
 
     quote do
-      JevDSL.__register_contract__(
+      SystemOneDSL.__register_contract__(
         __MODULE__,
         unquote(contract_atom),
         [unquote(question_ast)],
@@ -275,8 +275,19 @@ defmodule JevDSL do
   @doc """
   Defines a multi-question contract combining `choice`, `noul`, and/or `score` sub-questions.
   """
+  defmacro defcontract(name, do: block) do
+    compile_multi_question_contract(name, block, __CALLER__)
+  end
+
+  @doc """
+  Alias for `defcontract/2`. Defines a multi-question contract combining `choice`, `noul`, and/or `score` sub-questions.
+  """
   defmacro defjev(name, do: block) do
-    contract_atom = normalize_key_atom!(name, __CALLER__)
+    compile_multi_question_contract(name, block, __CALLER__)
+  end
+
+  defp compile_multi_question_contract(name, block, caller) do
+    contract_atom = normalize_key_atom!(name, caller)
 
     exprs =
       case block do
@@ -284,15 +295,15 @@ defmodule JevDSL do
         single -> [single]
       end
 
-    questions_ast = Enum.map(exprs, &compile_subquestion_ast(&1, __CALLER__))
+    questions_ast = Enum.map(exprs, &compile_subquestion_ast(&1, caller))
 
     quote do
-      JevDSL.__register_contract__(
+      SystemOneDSL.__register_contract__(
         __MODULE__,
         unquote(contract_atom),
         unquote(questions_ast),
-        unquote(__CALLER__.file),
-        unquote(__CALLER__.line)
+        unquote(caller.file),
+        unquote(caller.line)
       )
     end
   end
@@ -305,7 +316,7 @@ defmodule JevDSL do
     target_atom = normalize_key_atom!(target_name, __CALLER__)
 
     quote do
-      @jev_aliases {unquote(alias_atom), unquote(target_atom), unquote(__CALLER__.line)}
+      @system_one_aliases {unquote(alias_atom), unquote(target_atom), unquote(__CALLER__.line)}
     end
   end
 
@@ -433,7 +444,7 @@ defmodule JevDSL do
       file: caller.file,
       line: caller.line,
       description:
-        "Unsupported expression inside defjev block. Expected `choice`, `noul`, or `score`, got: #{Macro.to_string(other_ast)}"
+        "Unsupported expression inside defcontract/defjev block. Expected `choice`, `noul`, or `score`, got: #{Macro.to_string(other_ast)}"
   end
 
   defp parse_noul_definition(opts, do_block, caller) do
@@ -460,13 +471,13 @@ defmodule JevDSL do
 
   @doc false
   def __register_contract__(mod, name, questions, file, line) do
-    existing = Module.get_attribute(mod, :jev_contracts) || []
+    existing = Module.get_attribute(mod, :system_one_contracts) || []
 
     if List.keymember?(existing, name, 0) do
       raise CompileError,
         file: file,
         line: line,
-        description: "Duplicate JevDSL contract #{inspect(name)} defined in #{inspect(mod)}"
+        description: "Duplicate SystemOneDSL contract #{inspect(name)} defined in #{inspect(mod)}"
     end
 
     prepared_kw =
@@ -497,7 +508,7 @@ defmodule JevDSL do
       prepared: %{prepared | encoded: nil}
     }
 
-    Module.put_attribute(mod, :jev_contracts, {name, contract})
+    Module.put_attribute(mod, :system_one_contracts, {name, contract})
   end
 
   @doc false
@@ -600,11 +611,11 @@ defmodule JevDSL do
   ## Examples
 
       iex> resp = %{answers: %{tone: %{choice: "positive"}}}
-      iex> JevDSL.fetch_answer(resp, :tone)
+      iex> SystemOneDSL.fetch_answer(resp, :tone)
       {:ok, %{choice: "positive"}}
-      iex> JevDSL.fetch_answer(resp, "tone")
+      iex> SystemOneDSL.fetch_answer(resp, "tone")
       {:ok, %{choice: "positive"}}
-      iex> JevDSL.fetch_answer(resp, :missing)
+      iex> SystemOneDSL.fetch_answer(resp, :missing)
       :error
   """
   @spec fetch_answer(SystemOneSDK.SystemOneResponse.t() | map(), atom() | String.t()) ::
@@ -630,7 +641,7 @@ defmodule JevDSL do
           key: key,
           term: answers,
           message:
-            "no JevDSL answer for #{inspect(key)}; available keys: #{inspect(Map.keys(answers))}"
+            "no SystemOneDSL answer for #{inspect(key)}; available keys: #{inspect(Map.keys(answers))}"
     end
   end
 
@@ -641,11 +652,11 @@ defmodule JevDSL do
   ## Examples
 
       iex> ans = %SystemOneSDK.ChoiceAnswer{choice: "positive", confidence: 0.9, probabilities: %{"positive" => 0.9}}
-      iex> JevDSL.choice?(ans, :positive)
+      iex> SystemOneDSL.choice?(ans, :positive)
       true
-      iex> JevDSL.choice?(ans, "positive")
+      iex> SystemOneDSL.choice?(ans, "positive")
       true
-      iex> JevDSL.choice?(ans, :negative)
+      iex> SystemOneDSL.choice?(ans, :negative)
       false
   """
   @spec choice?(SystemOneSDK.ChoiceAnswer.t() | map() | atom() | String.t(), atom() | String.t()) ::
@@ -668,9 +679,9 @@ defmodule JevDSL do
   ## Examples
 
       iex> ans = %SystemOneSDK.ChoiceAnswer{choice: "positive", confidence: 0.9, probabilities: %{"positive" => 0.9, "neutral" => 0.1}}
-      iex> JevDSL.probability(ans, :positive)
+      iex> SystemOneDSL.probability(ans, :positive)
       {:ok, 0.9}
-      iex> JevDSL.probability(ans, "neutral")
+      iex> SystemOneDSL.probability(ans, "neutral")
       {:ok, 0.1}
   """
   @spec probability(SystemOneSDK.ChoiceAnswer.t() | map(), atom() | String.t()) ::
@@ -720,7 +731,7 @@ defmodule JevDSL do
   end
 
   @doc """
-  Exports compiled Jev contracts into a CUE schema document.
+  Exports compiled contracts into a CUE schema document.
   """
   @spec export_cue(%{optional(atom() | String.t()) => Contract.t() | map()}) :: String.t()
   defdelegate export_cue(contracts_map), to: CUE, as: :export
@@ -807,17 +818,17 @@ defmodule JevDSL do
       @compiled_by_string unquote(Macro.escape(by_string))
 
       @doc false
-      @spec __jev_dsl_opts__() :: keyword()
-      def __jev_dsl_opts__, do: @jev_dsl_opts
+      @spec __system_one_dsl_opts__() :: keyword()
+      def __system_one_dsl_opts__, do: @system_one_dsl_opts
 
-      @doc "Returns a map of all compiled `%JevDSL.Contract{}` definitions keyed by contract atom."
-      @spec __contracts__() :: %{optional(atom()) => JevDSL.Contract.t()}
+      @doc "Returns a map of all compiled `%SystemOneDSL.Contract{}` definitions keyed by contract atom."
+      @spec __contracts__() :: %{optional(atom()) => SystemOneDSL.Contract.t()}
       def __contracts__ do
         unquote(__MODULE__).hydrate_contracts_map(@compiled_by_atom)
       end
 
-      @doc "Fetches the compiled `%JevDSL.Contract{}` for `key` (atom or string)."
-      @spec contract(atom() | String.t()) :: {:ok, JevDSL.Contract.t()} | :error
+      @doc "Fetches the compiled `%SystemOneDSL.Contract{}` for `key` (atom or string)."
+      @spec contract(atom() | String.t()) :: {:ok, SystemOneDSL.Contract.t()} | :error
       def contract(key) do
         unquote(__MODULE__).fetch_contract(@compiled_by_atom, @compiled_by_string, key)
       end
@@ -865,7 +876,8 @@ defmodule JevDSL do
       quote do
         @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
         @spec cache_key(atom() | String.t(), term()) :: String.t()
-        def cache_key(key, state), do: Cache.key(state, prepared(key), __jev_dsl_opts__())
+        def cache_key(key, state),
+          do: Cache.key(state, prepared(key), __system_one_dsl_opts__())
 
         defoverridable cache_key: 2
       end
@@ -902,7 +914,7 @@ defmodule JevDSL do
   defp maybe_quote_evaluate_bang(mod) do
     unless Module.defines?(mod, {:evaluate!, 3}) do
       quote do
-        @doc "Evaluates `state` against `key` (atom or string) or raises `JevDSL.Error` / `SystemOneSDK.Error`."
+        @doc "Evaluates `state` against `key` (atom or string) or raises `SystemOneDSL.Error` / `SystemOneSDK.Error`."
         @spec evaluate!(atom() | String.t(), map(), keyword()) ::
                 SystemOneSDK.SystemOneResponse.t() | map()
         def evaluate!(key, state, opts \\ []),
@@ -930,13 +942,13 @@ defmodule JevDSL do
   defp merge_compiled_contracts!(env) do
     contracts =
       env.module
-      |> Module.get_attribute(:jev_contracts)
+      |> Module.get_attribute(:system_one_contracts)
       |> Enum.reverse()
       |> Map.new()
 
     aliases =
       env.module
-      |> Module.get_attribute(:jev_aliases)
+      |> Module.get_attribute(:system_one_aliases)
       |> Enum.reverse()
 
     Enum.reduce(aliases, contracts, fn {alias_k, target_k, line}, acc ->

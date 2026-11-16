@@ -1,11 +1,11 @@
-defmodule JevDSL.Providers.GeminiDecisions.Protocol do
+defmodule SystemOneDSL.Providers.GeminiDecisions.Protocol do
   @moduledoc """
   Wire protocol encoder and response decoder for the Gemini Decisions API (`gemini-decision-1`),
   supporting both LiteLLM's unified `/v1/decisions` format and Google's native
   `/v1beta/decisions` (or `/gemini/v1beta/decisions` passthrough) format.
   """
 
-  alias JevDSL.Error
+  alias SystemOneDSL.Error
   alias SystemOneSDK.{ChoiceAnswer, NoulAnswer, Prepared, ScoreAnswer, SystemOneResponse, Usage}
 
   @type mode :: :unified | :native

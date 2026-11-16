@@ -1,7 +1,7 @@
-defmodule JevDSL.Question do
+defmodule SystemOneDSL.Question do
   @moduledoc """
   Typed representation of a single compiled question (`:noul`, `:choice`, or `:score`)
-  within a `JevDSL.Contract`.
+  within a `SystemOneDSL.Contract`.
   """
 
   @enforce_keys [:name, :type, :instructions, :criteria]
@@ -22,9 +22,9 @@ defmodule JevDSL.Question do
         }
 end
 
-defmodule JevDSL.Contract do
+defmodule SystemOneDSL.Contract do
   @moduledoc """
-  Typed representation of a compiled TypeSafe Jev (`SystemOneSDK`) contract,
+  Typed representation of a compiled `SystemOneSDK` / decision contract,
   wrapping the question definitions and the build-time validated `%SystemOneSDK.Prepared{}` struct.
   """
 
@@ -33,7 +33,7 @@ defmodule JevDSL.Contract do
 
   @type t :: %__MODULE__{
           name: atom(),
-          questions: [JevDSL.Question.t()],
+          questions: [SystemOneDSL.Question.t()],
           prepared: SystemOneSDK.Prepared.t()
         }
 end

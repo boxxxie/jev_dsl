@@ -1,19 +1,19 @@
-defmodule JevDSL.CUE do
+defmodule SystemOneDSL.CUE do
   @moduledoc """
-  Deterministic CUE schema exporter for compiled `JevDSL.Contract` catalogs.
+  Deterministic CUE schema exporter for compiled `SystemOneDSL.Contract` catalogs.
   """
 
-  alias JevDSL.{Contract, Question}
+  alias SystemOneDSL.{Contract, Question}
 
   @doc """
-  Serializes a map of compiled `JevDSL.Contract` structs into a deterministic CUE schema string.
+  Serializes a map of compiled `SystemOneDSL.Contract` structs into a deterministic CUE schema string.
 
   ## Examples
 
-      iex> q = %JevDSL.Question{name: :is_spam, type: :noul, instructions: "Spam?", criteria: %{}}
+      iex> q = %SystemOneDSL.Question{name: :is_spam, type: :noul, instructions: "Spam?", criteria: %{}}
       iex> prep = SystemOneSDK.prepare!([is_spam: SystemOneSDK.noul("Spam?")])
-      iex> contract = %JevDSL.Contract{name: :is_spam, questions: [q], prepared: prep}
-      iex> JevDSL.CUE.export(%{is_spam: contract})
+      iex> contract = %SystemOneDSL.Contract{name: :is_spam, questions: [q], prepared: prep}
+      iex> SystemOneDSL.CUE.export(%{is_spam: contract})
       "is_spam: {\\n  is_spam: {\\n    type: \\"noul\\"\\n    instructions: \\"Spam?\\"\\n    criteria: {}\\n  }\\n}"
   """
   @spec export(%{optional(atom() | String.t()) => Contract.t() | map()}) :: String.t()

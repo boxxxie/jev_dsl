@@ -1,17 +1,17 @@
-defmodule JevDSL.GeminiDecisionsTest do
+defmodule SystemOneDSL.GeminiDecisionsTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  describe "use JevDSL backend option validation" do
+  describe "use SystemOneDSL backend option validation" do
     test "accepts :system_one and :gemini_decisions backends with unified or native modes" do
       for backend <- [:system_one, :gemini_decisions] do
-        opts = JevDSL.__validate_use_opts__!(backend: backend)
+        opts = SystemOneDSL.__validate_use_opts__!(backend: backend)
         assert Keyword.get(opts, :backend) == backend
       end
 
       for mode <- [:unified, :native] do
         opts =
-          JevDSL.__validate_use_opts__!(
+          SystemOneDSL.__validate_use_opts__!(
             backend: :gemini_decisions,
             decisions_mode: mode,
             auth_mode: :x_goog_api_key,
@@ -28,15 +28,15 @@ defmodule JevDSL.GeminiDecisionsTest do
 
     test "rejects invalid :backend, :decisions_mode, or :auth_mode values" do
       assert_raise NimbleOptions.ValidationError, fn ->
-        JevDSL.__validate_use_opts__!(backend: :unknown_backend)
+        SystemOneDSL.__validate_use_opts__!(backend: :unknown_backend)
       end
 
       assert_raise NimbleOptions.ValidationError, fn ->
-        JevDSL.__validate_use_opts__!(decisions_mode: :invalid_mode)
+        SystemOneDSL.__validate_use_opts__!(decisions_mode: :invalid_mode)
       end
 
       assert_raise NimbleOptions.ValidationError, fn ->
-        JevDSL.__validate_use_opts__!(auth_mode: :invalid_auth)
+        SystemOneDSL.__validate_use_opts__!(auth_mode: :invalid_auth)
       end
     end
 
@@ -47,7 +47,7 @@ defmodule JevDSL.GeminiDecisionsTest do
               auth_mode <- member_of([:bearer, :x_goog_api_key])
             ) do
         opts =
-          JevDSL.__validate_use_opts__!(
+          SystemOneDSL.__validate_use_opts__!(
             backend: backend,
             decisions_mode: decisions_mode,
             auth_mode: auth_mode
@@ -62,8 +62,8 @@ defmodule JevDSL.GeminiDecisionsTest do
 
   describe "cache key isolation and backend availability" do
     defmodule GeminiUnifiedContract do
-      use JevDSL,
-        otp_app: :jev_dsl,
+      use SystemOneDSL,
+        otp_app: :system_one_dsl,
         backend: :gemini_decisions,
         decisions_mode: :unified,
         model: "gemini-decision-1"
@@ -74,8 +74,8 @@ defmodule JevDSL.GeminiDecisionsTest do
     end
 
     defmodule GeminiNativeContract do
-      use JevDSL,
-        otp_app: :jev_dsl,
+      use SystemOneDSL,
+        otp_app: :system_one_dsl,
         backend: :gemini_decisions,
         decisions_mode: :native,
         model: "gemini-decision-1"
@@ -86,8 +86,8 @@ defmodule JevDSL.GeminiDecisionsTest do
     end
 
     defmodule SystemOneContract do
-      use JevDSL,
-        otp_app: :jev_dsl
+      use SystemOneDSL,
+        otp_app: :system_one_dsl
 
       defnoul :is_spam do
         "Is this spam?"
@@ -100,24 +100,24 @@ defmodule JevDSL.GeminiDecisionsTest do
       prep_uni = GeminiUnifiedContract.prepared(:is_spam)
       prep_nat = GeminiNativeContract.prepared(:is_spam)
 
-      key_sys = JevDSL.Cache.key(state, prep_sys)
+      key_sys = SystemOneDSL.Cache.key(state, prep_sys)
 
       key_uni =
-        JevDSL.Cache.key(state, prep_uni,
+        SystemOneDSL.Cache.key(state, prep_uni,
           backend: :gemini_decisions,
           decisions_mode: :unified,
           model: "gemini-decision-1"
         )
 
       key_nat =
-        JevDSL.Cache.key(state, prep_nat,
+        SystemOneDSL.Cache.key(state, prep_nat,
           backend: :gemini_decisions,
           decisions_mode: :native,
           model: "gemini-decision-1"
         )
 
       key_other_model =
-        JevDSL.Cache.key(state, prep_uni,
+        SystemOneDSL.Cache.key(state, prep_uni,
           backend: :gemini_decisions,
           decisions_mode: :unified,
           model: "gemini-decision-2"
@@ -133,10 +133,12 @@ defmodule JevDSL.GeminiDecisionsTest do
     end
 
     test "recognizes gemini_api_key and api_key for :gemini_decisions" do
-      assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: "gk-123") ==
+      assert SystemOneDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: "gk-123") ==
                "gk-123"
 
-      assert JevDSL.Runner.api_key(backend: :gemini_decisions, api_key: "gk-456") == "gk-456"
+      assert SystemOneDSL.Runner.api_key(backend: :gemini_decisions, api_key: "gk-456") ==
+               "gk-456"
+
       assert GeminiUnifiedContract.available?(gemini_api_key: "gk-123")
       assert GeminiNativeContract.available?(api_key: "gk-456")
     end

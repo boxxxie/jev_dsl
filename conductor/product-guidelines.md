@@ -1,8 +1,8 @@
-# Product Guidelines: JevDSL
+# Product Guidelines: SystemOneDSL
 
 ## API & DSL Design Principles
 - **Compile-Time Feedback:** Fail fast during compilation (`CompileError` with accurate file/line metadata) for invalid contract schemas, duplicate names, or unsupported options.
-- **Explicit & Idiomatic Elixir:** Return `{:ok, result}` / `{:error, reason}` tuples for fallible operations, with `!` variants (`evaluate!/3`) raising `JevDSL.Error` or structured exceptions.
+- **Explicit & Idiomatic Elixir:** Return `{:ok, result}` / `{:error, reason}` tuples for fallible operations, with `!` variants (`evaluate!/3`) raising `SystemOneDSL.Error` or structured exceptions.
 - **Predictable Atom Keys:** Compile declared choice/score keys to atoms in declaration order so callers can pattern match directly; accept both atoms and strings in lookup helpers.
 - **Zero-Surprise Defaults:** Keep runtime dependencies minimal and optional integrations (e.g., Igniter) cleanly isolated.
 

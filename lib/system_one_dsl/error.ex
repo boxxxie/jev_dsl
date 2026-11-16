@@ -1,7 +1,7 @@
-defmodule JevDSL.Error do
+defmodule SystemOneDSL.Error do
   @moduledoc """
-  Structured exception raised by `evaluate!/3` and `JevDSL.Runner.evaluate!/4` when a
-  `JevDSL` contract evaluation fails.
+  Structured exception raised by `evaluate!/3` and `SystemOneDSL.Runner.evaluate!/4` when a
+  `SystemOneDSL` contract evaluation fails.
 
   ## Fields
 
@@ -26,7 +26,7 @@ defmodule JevDSL.Error do
         }
 
   defexception type: :evaluation_failed,
-               message: "JevDSL evaluation failed",
+               message: "SystemOneDSL evaluation failed",
                contract: nil,
                details: nil
 
@@ -39,7 +39,7 @@ defmodule JevDSL.Error do
       type: :no_api_key,
       contract: contract,
       message:
-        "No TYPESAFE_API_KEY configured for JevDSL evaluation" <>
+        "No TYPESAFE_API_KEY configured for SystemOneDSL evaluation" <>
           format_contract_suffix(contract)
     }
   end
@@ -67,7 +67,7 @@ defmodule JevDSL.Error do
       type: :unknown_contract,
       contract: contract,
       details: %{module: module},
-      message: "Unknown JevDSL contract #{inspect(contract)} in #{inspect(module)}"
+      message: "Unknown SystemOneDSL contract #{inspect(contract)} in #{inspect(module)}"
     }
   end
 
@@ -84,7 +84,7 @@ defmodule JevDSL.Error do
   end
 
   @doc """
-  Converts an error reason from `evaluate/3` into a raisable exception (`JevDSL.Error` or `SystemOneSDK.Error`).
+  Converts an error reason from `evaluate/3` into a raisable exception (`SystemOneDSL.Error` or `SystemOneSDK.Error`).
   """
   @spec from_reason(term(), atom() | String.t() | nil) :: Exception.t()
   def from_reason(%__MODULE__{} = err, _contract), do: err
@@ -96,7 +96,7 @@ defmodule JevDSL.Error do
     %__MODULE__{
       type: :unknown_contract,
       contract: contract,
-      message: "Unknown JevDSL contract #{inspect(contract)}"
+      message: "Unknown SystemOneDSL contract #{inspect(contract)}"
     }
   end
 
@@ -114,7 +114,8 @@ defmodule JevDSL.Error do
       type: :evaluation_failed,
       contract: contract,
       details: other,
-      message: "JevDSL evaluation failed#{format_contract_suffix(contract)}: #{inspect(other)}"
+      message:
+        "SystemOneDSL evaluation failed#{format_contract_suffix(contract)}: #{inspect(other)}"
     }
   end
 

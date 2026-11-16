@@ -1,4 +1,4 @@
-defmodule JevDSL.MixProject do
+defmodule SystemOneDSL.MixProject do
   use Mix.Project
 
   @version "0.1.0"
@@ -6,7 +6,8 @@ defmodule JevDSL.MixProject do
 
   def project do
     [
-      app: :jev_dsl,
+      app: :system_one_dsl,
+      name: "SystemOneDSL",
       version: @version,
       elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -56,7 +57,7 @@ defmodule JevDSL.MixProject do
 
   defp package do
     [
-      name: "jev_dsl",
+      name: "system_one_dsl",
       maintainers: ["Paul"],
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md usage-rules.md),
       licenses: ["MIT"],
@@ -75,19 +76,23 @@ defmodule JevDSL.MixProject do
       source_url: @source_url,
       groups_for_modules: [
         "Contract DSL": [
-          JevDSL,
-          JevDSL.Contract,
-          JevDSL.Question,
-          JevDSL.CUE
+          SystemOneDSL,
+          SystemOneDSL.Contract,
+          SystemOneDSL.Question,
+          SystemOneDSL.CUE
         ],
         "Caching & Execution": [
-          JevDSL.Runner,
-          JevDSL.Cache,
-          JevDSL.Cache.ETS,
-          JevDSL.Error
+          SystemOneDSL.Runner,
+          SystemOneDSL.Cache,
+          SystemOneDSL.Cache.ETS,
+          SystemOneDSL.Error
+        ],
+        Providers: [
+          SystemOneDSL.Providers.GeminiDecisions,
+          SystemOneDSL.Providers.GeminiDecisions.Protocol
         ],
         Installers: [
-          Mix.Tasks.JevDsl.Install
+          Mix.Tasks.SystemOneDsl.Install
         ]
       ]
     ]

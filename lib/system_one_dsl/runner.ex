@@ -1,20 +1,20 @@
-defmodule JevDSL.Runner do
+defmodule SystemOneDSL.Runner do
   @moduledoc """
   Runtime evaluation, batch execution, two-tier (L1 + L2) cache orchestration,
-  and deterministic test stubbing for `JevDSL` contract modules.
+  and deterministic test stubbing for `SystemOneDSL` contract modules.
 
-  Every module that invokes `use JevDSL` automatically receives `evaluate/3`,
+  Every module that invokes `use SystemOneDSL` automatically receives `evaluate/3`,
   `evaluate!/3`, `evaluate_many/3`, `available?/2`, and `cache_key/2` delegated
-  to `JevDSL.Runner`.
+  to `SystemOneDSL.Runner`.
 
   ## Telemetry Events
 
-  `JevDSL.Runner` emits `:telemetry.span/3` events:
-  * `[:jev_dsl, :evaluate, :start | :stop | :exception]` — Metadata: `%{module: module(), contract: atom() | String.t(), status: :ok | :error}`.
-  * `[:jev_dsl, :evaluate_many, :start | :stop | :exception]` — Metadata: `%{module: module(), contract: atom() | String.t(), count: non_neg_integer()}`.
+  `SystemOneDSL.Runner` emits `:telemetry.span/3` events:
+  * `[:system_one_dsl, :evaluate, :start | :stop | :exception]` — Metadata: `%{module: module(), contract: atom() | String.t(), status: :ok | :error}`.
+  * `[:system_one_dsl, :evaluate_many, :start | :stop | :exception]` — Metadata: `%{module: module(), contract: atom() | String.t(), count: non_neg_integer()}`.
   """
 
-  alias JevDSL.{Cache, Error}
+  alias SystemOneDSL.{Cache, Error}
 
   @client_sdk_options [
     :base_url,
@@ -79,8 +79,8 @@ defmodule JevDSL.Runner do
   ## Options
 
     * `:cache?` - Enables L1/L2 caching (default: `true`).
-    * `:cache` - L1 cache module implementing `JevDSL.Cache` (default: module's configured `:cache` or `JevDSL.Cache.ETS`).
-    * `:tier2_cache` - Optional L2 durable cache module implementing `JevDSL.Cache`.
+    * `:cache` - L1 cache module implementing `SystemOneDSL.Cache` (default: module's configured `:cache` or `SystemOneDSL.Cache.ETS`).
+    * `:tier2_cache` - Optional L2 durable cache module implementing `SystemOneDSL.Cache`.
     * `:use_tier2_cache` - Allows serving L2 cache hits even when `TYPESAFE_API_KEY` is unset (default: `true`).
     * `:persist_tier2` - Persists new live evaluations and backfills L1 hits into L2 (default: `true`).
     * `:cache_only` - When `true`, resolves only from L1/L2 caches without making live network calls, returning `{:error, :cache_miss}` on misses.
@@ -96,7 +96,7 @@ defmodule JevDSL.Runner do
   def evaluate(contract_mod, contract_key, state, opts \\ []) when is_map(state) do
     meta = %{module: contract_mod, contract: contract_key}
 
-    :telemetry.span([:jev_dsl, :evaluate], meta, fn ->
+    :telemetry.span([:system_one_dsl, :evaluate], meta, fn ->
       result = do_evaluate(contract_mod, contract_key, state, opts)
       status = if match?({:ok, _}, result), do: :ok, else: :error
       {result, Map.put(meta, :status, status)}
@@ -104,7 +104,7 @@ defmodule JevDSL.Runner do
   end
 
   @doc """
-  Evaluates a single `state` map against `contract_key` or raises `JevDSL.Error` / `SystemOneSDK.Error`.
+  Evaluates a single `state` map against `contract_key` or raises `SystemOneDSL.Error` / `SystemOneSDK.Error`.
   """
   @spec evaluate!(module(), atom() | String.t(), map(), keyword()) ::
           SystemOneSDK.SystemOneResponse.t() | map()
@@ -151,7 +151,7 @@ defmodule JevDSL.Runner do
   def evaluate_many(contract_mod, contract_key, states, opts) when is_list(states) do
     meta = %{module: contract_mod, contract: contract_key, count: length(states)}
 
-    :telemetry.span([:jev_dsl, :evaluate_many], meta, fn ->
+    :telemetry.span([:system_one_dsl, :evaluate_many], meta, fn ->
       results = do_evaluate_many(contract_mod, contract_key, states, opts)
       {results, meta}
     end)
@@ -250,8 +250,8 @@ defmodule JevDSL.Runner do
     Code.ensure_loaded(contract_mod)
 
     base_opts =
-      if function_exported?(contract_mod, :__jev_dsl_opts__, 0) do
-        contract_mod.__jev_dsl_opts__()
+      if function_exported?(contract_mod, :__system_one_dsl_opts__, 0) do
+        contract_mod.__system_one_dsl_opts__()
       else
         []
       end
@@ -313,7 +313,7 @@ defmodule JevDSL.Runner do
           |> Keyword.put(:api_key, api_key(opts))
 
         SystemOneSDK.new_client(
-          provider: JevDSL.Providers.GeminiDecisions,
+          provider: SystemOneDSL.Providers.GeminiDecisions,
           provider_opts: provider_opts
         )
 
@@ -368,7 +368,7 @@ defmodule JevDSL.Runner do
   end
 
   defp build_cache_ctx(contract_key, opts) do
-    l1 = Keyword.get(opts, :cache, JevDSL.Cache.ETS)
+    l1 = Keyword.get(opts, :cache, SystemOneDSL.Cache.ETS)
     l2 = Keyword.get(opts, :tier2_cache)
 
     %{

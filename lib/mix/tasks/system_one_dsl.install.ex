@@ -1,16 +1,16 @@
 if Code.ensure_loaded?(Igniter.Mix.Task) do
-  defmodule Mix.Tasks.JevDsl.Install do
-    @shortdoc "Installs JevDSL into a project. Invoke with `mix igniter.install jev_dsl`."
+  defmodule Mix.Tasks.SystemOneDsl.Install do
+    @shortdoc "Installs SystemOneDSL into a project. Invoke with `mix igniter.install system_one_dsl`."
     @moduledoc """
     #{@shortdoc}
 
-    Configures `.formatter.exs` with `import_deps: [:jev_dsl]` and optionally generates
-    a starter `JevDSL` contract module when `--module` is passed.
+    Configures `.formatter.exs` with `import_deps: [:system_one_dsl]` and optionally generates
+    a starter `SystemOneDSL` contract module when `--module` is passed.
 
     ## Example
 
-        mix igniter.install jev_dsl --yes
-        mix igniter.install jev_dsl --module MyApp.TriageContracts --yes
+        mix igniter.install system_one_dsl --yes
+        mix igniter.install system_one_dsl --module MyApp.TriageContracts --yes
     """
 
     use Igniter.Mix.Task
@@ -21,8 +21,8 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     @impl Igniter.Mix.Task
     def info(_argv, _composing_task) do
       %Igniter.Mix.Task.Info{
-        group: :jev_dsl,
-        example: "mix igniter.install jev_dsl --module MyApp.TriageContracts",
+        group: :system_one_dsl,
+        example: "mix igniter.install system_one_dsl --module MyApp.TriageContracts",
         positional: [],
         schema: [module: :string, yes: :boolean],
         aliases: [m: :module, y: :yes],
@@ -36,7 +36,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     @impl Igniter.Mix.Task
     def igniter(igniter) do
       igniter
-      |> Formatter.import_dep(:jev_dsl)
+      |> Formatter.import_dep(:system_one_dsl)
       |> maybe_create_contract_module()
     end
 
@@ -50,9 +50,9 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
           |> ProjectModule.find_and_update_or_create_module(
             module_name,
             """
-            use JevDSL,
+            use SystemOneDSL,
               otp_app: :#{app_name},
-              cache: JevDSL.Cache.ETS
+              cache: SystemOneDSL.Cache.ETS
 
             defnoul :is_actionable do
               "Does this item require follow-up action?"
@@ -60,7 +60,7 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
             """,
             fn zipper -> {:ok, zipper} end
           )
-          |> Igniter.add_notice("Created JevDSL contract module #{inspect(module_name)}.")
+          |> Igniter.add_notice("Created SystemOneDSL contract module #{inspect(module_name)}.")
 
         _ ->
           igniter
@@ -68,15 +68,15 @@ if Code.ensure_loaded?(Igniter.Mix.Task) do
     end
   end
 else
-  defmodule Mix.Tasks.JevDsl.Install do
-    @shortdoc "Installs JevDSL. Invoke with `mix igniter.install jev_dsl`."
+  defmodule Mix.Tasks.SystemOneDsl.Install do
+    @shortdoc "Installs SystemOneDSL. Invoke with `mix igniter.install system_one_dsl`."
     @moduledoc @shortdoc
     use Mix.Task
 
     @impl Mix.Task
     def run(_argv) do
       Mix.shell().error("""
-      The task 'jev_dsl.install' requires `:igniter` to be configured as a dependency.
+      The task 'system_one_dsl.install' requires `:igniter` to be configured as a dependency.
       Please add `{:igniter, "~> 0.8", only: [:dev, :test], runtime: false}` to your `mix.exs`.
       """)
 

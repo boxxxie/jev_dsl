@@ -1,4 +1,4 @@
-defmodule JevDSL.ATDD.GeminiDecisionsDriver do
+defmodule SystemOneDSL.ATDD.GeminiDecisionsDriver do
   @moduledoc false
   @behaviour Pristine.Ports.Transport
 
@@ -24,9 +24,9 @@ defmodule JevDSL.ATDD.GeminiDecisionsDriver do
 
   defmodule Tier2ETS do
     @moduledoc false
-    @behaviour JevDSL.Cache
+    @behaviour SystemOneDSL.Cache
 
-    alias JevDSL.Cache.ETS
+    alias SystemOneDSL.Cache.ETS
 
     @impl true
     def get(key, opts) do
@@ -111,7 +111,7 @@ defmodule JevDSL.ATDD.GeminiDecisionsDriver do
 
     :telemetry.attach_many(
       handler_id,
-      [[:jev_dsl, :evaluate, :stop], [:jev_dsl, :evaluate_many, :stop]],
+      [[:system_one_dsl, :evaluate, :stop], [:system_one_dsl, :evaluate_many, :stop]],
       &__MODULE__.handle_telemetry/4,
       {parent, ref}
     )

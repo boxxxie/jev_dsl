@@ -1,11 +1,11 @@
-defmodule JevDSL.Features.GeminiDecisionsSpecTest do
+defmodule SystemOneDSL.Features.GeminiDecisionsSpecTest do
   use ExUnit.Case, async: true
 
-  import JevDSL.ATDD.GeminiDecisionsDSL
+  import SystemOneDSL.ATDD.GeminiDecisionsDSL
 
   defmodule TriageContracts do
-    use JevDSL,
-      otp_app: :jev_dsl,
+    use SystemOneDSL,
+      otp_app: :system_one_dsl,
       backend: :gemini_decisions,
       model: "gemini-decision-1"
 
@@ -48,7 +48,7 @@ defmodule JevDSL.Features.GeminiDecisionsSpecTest do
     |> when_replaying_offline(:sentiment, %{body: "Thanks for the fast fix!"})
     |> then_choice_is(:tone, :positive, 0.95)
     |> then_network_calls(1)
-    |> then_telemetry_recorded([[:jev_dsl, :evaluate, :stop]])
+    |> then_telemetry_recorded([[:system_one_dsl, :evaluate, :stop]])
   end
 
   test "evaluates native /gemini/v1beta/decisions passthrough with x-goog-api-key" do
@@ -101,7 +101,7 @@ defmodule JevDSL.Features.GeminiDecisionsSpecTest do
     ])
     |> then_batch_choices_are(:tone, [:positive, :negative])
     |> then_network_calls(2)
-    |> then_telemetry_recorded([[:jev_dsl, :evaluate_many, :stop]])
+    |> then_telemetry_recorded([[:system_one_dsl, :evaluate_many, :stop]])
   end
 
   test "returns :cache_miss during offline replay when judgment is uncached" do
