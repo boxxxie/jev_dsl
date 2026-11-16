@@ -2,9 +2,11 @@ defmodule JevDSL.ATDD.GeminiDecisionsDriver do
   @moduledoc false
   @behaviour Pristine.Ports.Transport
 
+  require ExUnit.Callbacks
+
   defmodule StubServer do
     @moduledoc false
-    use Agent
+    use Agent, restart: :temporary
 
     def start_link(responder) do
       Agent.start_link(fn -> %{responder: responder, requests: []} end)
@@ -13,13 +15,13 @@ defmodule JevDSL.ATDD.GeminiDecisionsDriver do
     def record_and_respond(pid, request) do
       responder =
         Agent.get_and_update(pid, fn state ->
-          {state.responder, %{state | requests: state.requests ++ [request]}}
+          {state.responder, %{state | requests: [request | state.requests]}}
         end)
 
       responder.(request)
     end
 
-    def requests(pid), do: Agent.get(pid, & &1.requests)
+    def requests(pid), do: Agent.get(pid, &Enum.reverse(&1.requests))
   end
 
   defmodule Tier2ETS do
@@ -106,12 +108,175 @@ defmodule JevDSL.ATDD.GeminiDecisionsDriver do
   end
 
   def start_stub(responder) do
-    {:ok, pid} = StubServer.start_link(responder)
-    pid
+    ExUnit.Callbacks.start_supervised!({StubServer, responder}, id: {StubServer, make_ref()})
   end
 
   def request_count(pid), do: length(StubServer.requests(pid))
   def requests(pid), do: StubServer.requests(pid)
+
+  def last_request_summary(pid) do
+    req = pid |> requests() |> List.last()
+    decoded = Jason.decode!(req.body)
+
+    mode =
+      case req.path do
+        "/v1/decisions" -> :unified
+        "/gemini/v1beta/decisions" -> :native
+        "/v1beta/decisions" -> :native
+        other -> other
+      end
+
+    auth_token =
+      cond do
+        auth = req.headers["Authorization"] -> String.replace_prefix(auth, "Bearer ", "")
+        key = req.headers["x-goog-api-key"] -> key
+        true -> nil
+      end
+
+    %{
+      mode: mode,
+      path: req.path,
+      model: decoded["model"],
+      auth_token: auth_token,
+      body: decoded,
+      headers: req.headers
+    }
+  end
+
+  def encode_upstream_answers(req, answers_spec, opts \\ []) when is_list(answers_spec) do
+    decoded = Jason.decode!(req.body)
+    flat? = Keyword.get(opts, :flat, false)
+
+    case req.path do
+      "/v1/decisions" ->
+        verify_unified_wire_request!(req, decoded, opts)
+
+        body = %{
+          "model" => Keyword.get(opts, :response_model, "gemini/gemini-decision-1"),
+          "answers" => Enum.map(answers_spec, &encode_unified_answer/1),
+          "usage" => %{"input_tokens" => 100, "output_tokens" => 0}
+        }
+
+        {200, body}
+
+      path when path in ["/gemini/v1beta/decisions", "/v1beta/decisions"] ->
+        verify_native_wire_request!(req, decoded, opts)
+
+        body =
+          if flat? and length(answers_spec) == 1 do
+            answers_spec
+            |> hd()
+            |> encode_flat_native_answer()
+            |> Map.merge(%{"total_input_tokens" => 94, "total_output_tokens" => 0})
+          else
+            %{
+              "answers" => Map.new(answers_spec, &encode_native_answer/1),
+              "usageMetadata" => %{"totalInputTokens" => 99, "totalOutputTokens" => 0}
+            }
+          end
+
+        {200, body}
+    end
+  end
+
+  defp verify_unified_wire_request!(req, decoded, opts) do
+    expected_auth = Keyword.get(opts, :expected_auth_header, "Bearer test-gemini-key")
+
+    if expected_auth && req.headers["Authorization"] != expected_auth do
+      raise "Expected Authorization #{inspect(expected_auth)}, got #{inspect(req.headers["Authorization"])}"
+    end
+
+    if not is_list(decoded["questions"]) do
+      raise "Expected unified questions list, got #{inspect(decoded["questions"])}"
+    end
+  end
+
+  defp verify_native_wire_request!(req, decoded, opts) do
+    expected_key = Keyword.get(opts, :expected_x_goog_key, "test-gemini-key")
+
+    if expected_key && req.headers["x-goog-api-key"] != expected_key do
+      raise "Expected x-goog-api-key #{inspect(expected_key)}, got #{inspect(req.headers["x-goog-api-key"])}"
+    end
+
+    if not is_map(decoded["questions"]) do
+      raise "Expected native questions map, got #{inspect(decoded["questions"])}"
+    end
+  end
+
+  defp encode_unified_answer({:noul, name, {:boolean_conf, bool_val, conf}}) do
+    %{"name" => to_string(name), "type" => "predicate", "noul" => bool_val, "confidence" => conf}
+  end
+
+  defp encode_unified_answer({:noul, name, prob}) when is_number(prob) do
+    %{"name" => to_string(name), "type" => "predicate", "probability" => prob}
+  end
+
+  defp encode_unified_answer({:choice, name, choice, conf, probs}) do
+    %{
+      "name" => to_string(name),
+      "type" => "choice",
+      "choice" => to_string(choice),
+      "confidence" => conf,
+      "probabilities" =>
+        Enum.map(probs, fn {k, v} -> %{"value" => to_string(k), "probability" => v} end)
+    }
+  end
+
+  defp encode_unified_answer({:score, name, score, conf, probs}) do
+    encoded_probs =
+      Enum.with_index(probs, fn {label, prob}, idx ->
+        %{"value" => idx, "label" => to_string(label), "probability" => prob}
+      end)
+
+    %{
+      "name" => to_string(name),
+      "type" => "score",
+      "score" => score,
+      "confidence" => conf,
+      "probabilities" => encoded_probs
+    }
+  end
+
+  defp encode_native_answer({:noul, name, {:boolean_conf, bool_val, conf}}) do
+    {to_string(name), %{"noul" => bool_val, "confidence" => conf}}
+  end
+
+  defp encode_native_answer({:noul, name, prob}) when is_number(prob) do
+    {to_string(name), %{"noul" => prob}}
+  end
+
+  defp encode_native_answer({:choice, name, choice, conf, probs}) do
+    {to_string(name),
+     %{
+       "type" => "choice",
+       "choice" => to_string(choice),
+       "confidence" => conf,
+       "probabilities" => Map.new(probs, fn {k, v} -> {to_string(k), v} end)
+     }}
+  end
+
+  defp encode_native_answer({:score, name, score, conf, probs}) do
+    encoded_probs =
+      probs
+      |> Enum.with_index()
+      |> Map.new(fn {{_label, prob}, idx} -> {Integer.to_string(idx), prob} end)
+
+    {to_string(name),
+     %{
+       "type" => "score",
+       "score" => score,
+       "confidence" => conf,
+       "probabilities" => encoded_probs
+     }}
+  end
+
+  defp encode_flat_native_answer({:noul, _name, {:flat_confidence, conf}}) do
+    %{"confidence" => conf}
+  end
+
+  defp encode_flat_native_answer({:noul, _name, prob}) when is_number(prob) do
+    %{"confidence" => prob}
+  end
 
   def unique_ets_tables do
     id = System.unique_integer([:positive])
@@ -134,11 +299,17 @@ defmodule JevDSL.ATDD.GeminiDecisionsDriver do
       {parent, ref}
     )
 
+    ExUnit.Callbacks.on_exit(fn -> :telemetry.detach(handler_id) end)
+
     {ref, handler_id}
   end
 
   def handle_telemetry(event, measurements, metadata, {parent, ref}) do
-    Kernel.send(parent, {:atdd_telemetry, ref, event, measurements, metadata})
+    callers = Process.get(:"$callers") || []
+
+    if self() == parent or parent in callers do
+      Kernel.send(parent, {:atdd_telemetry, ref, event, measurements, metadata})
+    end
   end
 
   def drain_telemetry({ref, handler_id}) do
