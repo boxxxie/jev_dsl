@@ -1,6 +1,6 @@
 # Tech Stack: JevDSL
 
-- **Language & Runtime:** Elixir (`~> 1.18`) on Erlang/OTP (`:logger`, `:crypto`, `:persistent_term`, ETS)
+- **Language & Runtime:** Elixir (`~> 1.19`) on Erlang/OTP (`:logger`, `:crypto`, `:persistent_term`, ETS)
 - **Architecture:** Single-package Mix library (`jev_dsl`)
 - **Core Dependencies:**
   - `system_one_sdk` (`~> 0.6.0`) — TypeSafe Jev client, contract preparation, and transport stubs

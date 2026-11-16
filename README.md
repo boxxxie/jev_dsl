@@ -3,7 +3,7 @@
 [![CI](https://github.com/boxxxie/jev_dsl/actions/workflows/ci.yml/badge.svg)](https://github.com/boxxxie/jev_dsl/actions/workflows/ci.yml)
 [![Hex.pm](https://img.shields.io/hexpm/v/jev_dsl.svg?logo=elixir&logoColor=white)](https://hex.pm/packages/jev_dsl)
 [![Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/jev_dsl)
-[![Elixir](https://img.shields.io/badge/Elixir-~%3E%201.18-4B275F.svg?logo=elixir&logoColor=white)](https://elixir-lang.org)
+[![Elixir](https://img.shields.io/badge/Elixir-~%3E%201.19-4B275F.svg?logo=elixir&logoColor=white)](https://elixir-lang.org)
 [![SystemOneSDK](https://img.shields.io/badge/SystemOneSDK-~%3E%200.6.0-3882D2.svg)](https://hex.pm/packages/system_one_sdk)
 [![Gemini Decisions](https://img.shields.io/badge/Gemini-gemini--decision--1-4285F4.svg?logo=googlegemini&logoColor=white)](#gemini-decisions-api-gemini-decision-1)
 [![Cache](https://img.shields.io/badge/cache-L1%20ETS%20%2B%20L2-orange.svg)](lib/jev_dsl/cache.ex)
