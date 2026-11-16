@@ -42,6 +42,8 @@ defmodule JevDSL.Cache do
       end
   """
 
+  alias JevDSL.Providers.GeminiDecisions
+
   @type cache_key :: String.t()
   @type batch_entry :: {cache_key(), atom() | String.t(), map(), term()}
 
@@ -99,21 +101,16 @@ defmodule JevDSL.Cache do
   end
 
   defp gemini_client_identity(state, fp, client, pclient, opts) do
-    pclient_map = pclient || %{}
+    {decisions_mode, model} =
+      GeminiDecisions.cache_identity_fields(client, pclient, opts)
 
     %{
       service: :gemini_decisions,
-      decisions_mode:
-        Keyword.get(opts, :decisions_mode) || Map.get(pclient_map, :decisions_mode) || :unified,
-      model: resolve_client_model(opts, client, pclient_map),
+      decisions_mode: decisions_mode,
+      model: model,
       state: state,
       fingerprint: fp
     }
-  end
-
-  defp resolve_client_model(opts, client, pclient_map) do
-    Keyword.get(opts, :model) || client.default_model || Map.get(pclient_map, :default_model) ||
-      "gemini-decision-1"
   end
 
   defp backend_identity(state, fp, opts) do

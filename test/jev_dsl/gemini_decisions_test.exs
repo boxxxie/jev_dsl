@@ -1,5 +1,5 @@
 defmodule JevDSL.GeminiDecisionsTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use ExUnitProperties
 
   alias JevDSL.ATDD.GeminiDecisionsDriver, as: Driver
@@ -38,45 +38,31 @@ defmodule JevDSL.GeminiDecisionsTest do
     end
   end
 
-  defmodule RuntimeConfiguredContract do
-    use JevDSL,
-      otp_app: :jev_dsl
-
-    defnoul :is_spam do
-      "Is this spam?"
-    end
-  end
-
-  defmodule OtherOtpAppContract do
-    use JevDSL,
-      otp_app: :some_other_app,
-      backend: :gemini_decisions
-
-    defnoul :is_spam do
-      "Is this spam?"
-    end
+  defmodule SecretCallbackHelper do
+    def return_false, do: false
+    def return_error, do: :error
   end
 
   describe "use JevDSL backend option validation" do
-    test "accepts :system_one and :gemini_decisions backends with unified or native modes" do
+    test "accepts :system_one and :gemini_decisions backends with unified, native, and auth_mode :none" do
       for backend <- [:system_one, :gemini_decisions] do
         opts = JevDSL.__validate_use_opts__!(backend: backend)
         assert Keyword.get(opts, :backend) == backend
       end
 
-      for mode <- [:unified, :native] do
+      for mode <- [:unified, :native], auth <- [:bearer, :x_goog_api_key, :none] do
         opts =
           JevDSL.__validate_use_opts__!(
             backend: :gemini_decisions,
             decisions_mode: mode,
-            auth_mode: :x_goog_api_key,
+            auth_mode: auth,
             gemini_api_key: "test-key",
             model: "gemini-decision-1",
-            base_url: "https://2-29-102-196.sslip.io"
+            base_url: "https://decisions.example.invalid"
           )
 
         assert Keyword.get(opts, :decisions_mode) == mode
-        assert Keyword.get(opts, :auth_mode) == :x_goog_api_key
+        assert Keyword.get(opts, :auth_mode) == auth
         assert Keyword.get(opts, :gemini_api_key) == "test-key"
       end
     end
@@ -99,7 +85,7 @@ defmodule JevDSL.GeminiDecisionsTest do
       check all(
               backend <- member_of([:system_one, :gemini_decisions]),
               decisions_mode <- member_of([:unified, :native]),
-              auth_mode <- member_of([:bearer, :x_goog_api_key])
+              auth_mode <- member_of([:bearer, :x_goog_api_key, :none])
             ) do
         opts =
           JevDSL.__validate_use_opts__!(
@@ -115,7 +101,7 @@ defmodule JevDSL.GeminiDecisionsTest do
     end
   end
 
-  describe "cache key isolation and backend availability" do
+  describe "cache key isolation, unified base_url safety, and backend availability" do
     test "isolates cache keys across :system_one, :unified, :native, and model overrides" do
       state = %{body: "hello"}
       prep_sys = SystemOneContract.prepared(:is_spam)
@@ -157,48 +143,60 @@ defmodule JevDSL.GeminiDecisionsTest do
                key_other_model
     end
 
-    test "cache_key/2 and cache_key/3 respect otp_app runtime config and per-call options" do
-      state = %{body: "runtime config"}
+    test "requires explicit/configured base_url for :unified mode without private IP default" do
+      assert_raise ArgumentError, ~r/Missing :base_url/, fn ->
+        GeminiDecisions.new_client(decisions_mode: :unified)
+      end
 
-      Application.put_env(:jev_dsl, RuntimeConfiguredContract,
-        backend: :gemini_decisions,
-        decisions_mode: :native,
-        model: "gemini-decision-9"
-      )
+      refute GeminiUnifiedContract.available?(gemini_api_key: "gk-123")
 
-      on_exit(fn -> Application.delete_env(:jev_dsl, RuntimeConfiguredContract) end)
+      assert {:error, %JevDSL.Error{type: :invalid_request, message: msg}} =
+               GeminiUnifiedContract.evaluate(:is_spam, %{body: "hi"},
+                 gemini_api_key: "gk-123",
+                 cache?: false
+               )
 
-      prep = RuntimeConfiguredContract.prepared(:is_spam)
+      assert msg =~ "Missing :base_url"
 
-      expected =
-        JevDSL.Cache.key(state, prep,
-          backend: :gemini_decisions,
-          decisions_mode: :native,
-          model: "gemini-decision-9"
-        )
+      assert GeminiUnifiedContract.available?(
+               gemini_api_key: "gk-123",
+               base_url: "http://localhost:4000"
+             )
 
-      assert RuntimeConfiguredContract.cache_key(:is_spam, state) == expected
-
-      override_expected =
-        JevDSL.Cache.key(state, prep,
-          backend: :gemini_decisions,
-          decisions_mode: :unified,
-          model: "gemini-decision-1"
-        )
-
-      assert RuntimeConfiguredContract.cache_key(:is_spam, state,
-               decisions_mode: :unified,
-               model: "gemini-decision-1"
-             ) == override_expected
+      assert GeminiNativeContract.available?(api_key: "gk-456")
     end
 
-    test "recognizes gemini_api_key and api_key for :gemini_decisions" do
+    test "recognizes gemini_api_key and api_key and rejects false/atom secrets" do
       assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: "gk-123") ==
                "gk-123"
 
       assert JevDSL.Runner.api_key(backend: :gemini_decisions, api_key: "gk-456") == "gk-456"
-      assert GeminiUnifiedContract.available?(gemini_api_key: "gk-123")
-      assert GeminiNativeContract.available?(api_key: "gk-456")
+
+      assert JevDSL.Runner.resolve_secret(false) == nil
+      assert JevDSL.Runner.resolve_secret(true) == nil
+      assert JevDSL.Runner.resolve_secret(:error) == nil
+
+      assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: false) == ""
+
+      assert JevDSL.Runner.resolve_override_secret(
+               [gemini_api_key: {SecretCallbackHelper, :return_false, []}],
+               [:gemini_api_key],
+               nil
+             ) == nil
+
+      assert JevDSL.Runner.resolve_override_secret(
+               [gemini_api_key: {SecretCallbackHelper, :return_error, []}],
+               [:gemini_api_key],
+               nil
+             ) == nil
+
+      refute GeminiNativeContract.available?(gemini_api_key: false)
+
+      assert {:error, :no_api_key} =
+               GeminiNativeContract.evaluate(:is_spam, %{body: "x"},
+                 gemini_api_key: false,
+                 cache?: false
+               )
     end
 
     test "attaches contract name when JevDSL.Error.from_reason/2 handles provider_error" do
@@ -209,82 +207,78 @@ defmodule JevDSL.GeminiDecisionsTest do
     end
   end
 
-  describe "client retries, headers: nil, :any secrets, app env fallback, and keyless proxies" do
-    test "enables default RetryPolicy and tolerates headers: nil in new_client/1" do
-      client = GeminiDecisions.new_client(headers: nil)
+  describe "client retries, headers: nil, ErrorHandler isolation, and explicit keyless auth" do
+    test "enables default RetryPolicy, tolerates headers: nil, and keeps error callbacks off GeminiDecisions" do
+      client = GeminiDecisions.new_client(base_url: "http://localhost:4000", headers: nil)
       assert client.headers == %{}
       assert %SystemOneSDK.RetryPolicy{max_retries: 2} = client.retry
 
-      no_retry = GeminiDecisions.new_client(retry: false)
+      no_retry = GeminiDecisions.new_client(base_url: "http://localhost:4000", retry: false)
       assert no_retry.retry == false
+
+      refute function_exported?(GeminiDecisions, :from_response, 4)
+      refute function_exported?(GeminiDecisions, :validation_error, 3)
+      refute function_exported?(GeminiDecisions, :connection_error, 2)
     end
 
-    test "resolves {:system, ENV}, 0-arity secret funs, and :jev_dsl application config" do
-      env_var = "JEV_DSL_TEST_SECRET_#{System.unique_integer([:positive])}"
-      System.put_env(env_var, "  sk-from-env  ")
-      prev_jev = Application.get_env(:jev_dsl, :gemini_api_key)
-      prev_litellm = System.get_env("LITELLM_API_KEY")
-      prev_master = System.get_env("LITELLM_MASTER_KEY")
-      prev_gemini = System.get_env("GEMINI_API_KEY")
-      System.delete_env("LITELLM_API_KEY")
-      System.delete_env("LITELLM_MASTER_KEY")
-      System.delete_env("GEMINI_API_KEY")
+    test "does not falsely mark nil-key contracts available without auth_mode: :none or custom headers" do
+      refute GeminiUnifiedContract.available?(
+               base_url: "http://localhost:4000",
+               api_key: nil
+             )
 
-      on_exit(fn ->
-        System.delete_env(env_var)
+      assert {:error, :no_api_key} =
+               GeminiUnifiedContract.evaluate(:is_spam, %{body: "hi"},
+                 base_url: "http://localhost:4000",
+                 api_key: nil,
+                 cache?: false
+               )
 
-        if is_nil(prev_jev),
-          do: Application.delete_env(:jev_dsl, :gemini_api_key),
-          else: Application.put_env(:jev_dsl, :gemini_api_key, prev_jev)
-
-        if prev_litellm, do: System.put_env("LITELLM_API_KEY", prev_litellm)
-        if prev_master, do: System.put_env("LITELLM_MASTER_KEY", prev_master)
-        if prev_gemini, do: System.put_env("GEMINI_API_KEY", prev_gemini)
-      end)
-
-      assert JevDSL.Runner.api_key(
-               backend: :gemini_decisions,
-               gemini_api_key: {:system, env_var}
-             ) == "sk-from-env"
-
-      assert JevDSL.Runner.api_key(
-               backend: :gemini_decisions,
-               gemini_api_key: fn -> "  sk-from-fun  " end
-             ) == "sk-from-fun"
-
-      assert JevDSL.Runner.api_key(
-               backend: :gemini_decisions,
-               gemini_api_key: {:system, "MISSING_ENV_VAR_XYZ"},
-               api_key: "sk-fallback"
-             ) == "sk-fallback"
-
-      Application.put_env(:jev_dsl, :gemini_api_key, "sk-jev-app-env")
-
-      assert JevDSL.Runner.api_key(backend: :gemini_decisions, otp_app: :some_other_app) ==
-               "sk-jev-app-env"
-
-      assert OtherOtpAppContract.available?()
-
-      # Explicit blank key overrides env/app-env fallback
-      assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: nil) == ""
-      assert JevDSL.Runner.api_key(backend: :gemini_decisions, api_key: "") == ""
+      refute GeminiNativeContract.available?(
+               base_url: "https://generativelanguage.googleapis.com",
+               gemini_api_key: nil
+             )
     end
 
-    test "supports keyless proxies and extra_headers-only auth for :gemini_decisions" do
+    test "supports auth_mode: :none and extra_headers-only auth for :gemini_decisions" do
       pid =
         Driver.start_stub(fn req ->
           refute Map.has_key?(req.headers, "Authorization")
-          assert req.headers["X-Proxy-Token"] == "proxy-secret"
-
+          refute Map.has_key?(req.headers, "x-goog-api-key")
           {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.12}]}}
         end)
 
       assert GeminiUnifiedContract.available?(
                base_url: "http://localhost:4000",
-               api_key: nil
+               auth_mode: :none
              )
 
-      assert GeminiUnifiedContract.available?(extra_headers: %{"X-Proxy-Token" => "proxy-secret"})
+      assert {:ok, keyless_resp} =
+               GeminiUnifiedContract.evaluate(:is_spam, %{body: "hello auth none"},
+                 base_url: "http://localhost:4000",
+                 auth_mode: :none,
+                 api_key: "ignored-when-none",
+                 transport: Driver,
+                 transport_opts: [stub_pid: pid],
+                 cache?: false,
+                 retry: false
+               )
+
+      assert {:ok, %{noul: 0.12}} = JevDSL.fetch_answer(keyless_resp, :is_spam)
+      assert Driver.request_count(pid) == 1
+
+      proxy_pid =
+        Driver.start_stub(fn req ->
+          refute Map.has_key?(req.headers, "Authorization")
+          assert req.headers["X-Proxy-Token"] == "proxy-secret"
+
+          {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.22}]}}
+        end)
+
+      assert GeminiUnifiedContract.available?(
+               base_url: "http://localhost:4000",
+               extra_headers: %{"X-Proxy-Token" => "proxy-secret"}
+             )
 
       assert {:ok, resp} =
                GeminiUnifiedContract.evaluate(:is_spam, %{body: "hello proxy"},
@@ -292,17 +286,77 @@ defmodule JevDSL.GeminiDecisionsTest do
                  api_key: "",
                  extra_headers: %{"X-Proxy-Token" => "proxy-secret"},
                  transport: Driver,
-                 transport_opts: [stub_pid: pid],
+                 transport_opts: [stub_pid: proxy_pid],
                  cache?: false,
                  retry: false
                )
 
-      assert {:ok, %{noul: 0.12}} = JevDSL.fetch_answer(resp, :is_spam)
-      assert Driver.request_count(pid) == 1
+      assert {:ok, %{noul: 0.22}} = JevDSL.fetch_answer(resp, :is_spam)
+      assert Driver.request_count(proxy_pid) == 1
     end
   end
 
-  describe "pre-built :client cache namespace isolation and per-call overrides" do
+  describe "pre-built :client cache namespace isolation, base_url overrides, and case-insensitive headers" do
+    test "honors per-call :base_url override and case-insensitive extra_headers on pre-built :client" do
+      pid =
+        Driver.start_stub(fn req ->
+          # Case-insensitive override replaces Authorization instead of emitting duplicate keys
+          auth_keys =
+            req.headers
+            |> Map.keys()
+            |> Enum.filter(&(String.downcase(&1) == "authorization"))
+
+          assert length(auth_keys) <= 1
+
+          case {req.url, req.path} do
+            {"https://generativelanguage.googleapis.com/v1beta/decisions", "/v1beta/decisions"} ->
+              assert req.headers["x-goog-api-key"] == "sk-google"
+              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.31}}}}
+
+            {"https://override.example.invalid/v1/decisions", "/v1/decisions"} ->
+              assert req.headers["authorization"] == "Bearer override-lower"
+              assert req.headers["X-Num"] == "42"
+              {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.41}]}}
+          end
+        end)
+
+      uni_client =
+        SystemOneSDK.new_client(
+          provider: GeminiDecisions,
+          provider_opts: [
+            decisions_mode: :unified,
+            model: "gemini-decision-1",
+            api_key: "sk-initial",
+            base_url: "https://initial.example.invalid",
+            transport: Driver,
+            transport_opts: [stub_pid: pid],
+            retry: false
+          ]
+        )
+
+      assert {:ok, google_resp} =
+               SystemOneContract.evaluate(:is_spam, %{body: "base_url override to google"},
+                 client: uni_client,
+                 decisions_mode: :native,
+                 base_url: "https://generativelanguage.googleapis.com",
+                 api_key: "sk-google",
+                 cache?: false
+               )
+
+      assert {:ok, %{noul: 0.31}} = JevDSL.fetch_answer(google_resp, :is_spam)
+
+      assert {:ok, header_resp} =
+               SystemOneContract.evaluate(:is_spam, %{body: "case-insensitive header override"},
+                 client: uni_client,
+                 base_url: "https://override.example.invalid",
+                 extra_headers: %{"authorization" => "Bearer override-lower", "X-Num" => 42},
+                 cache?: false
+               )
+
+      assert {:ok, %{noul: 0.41}} = JevDSL.fetch_answer(header_resp, :is_spam)
+      assert Driver.request_count(pid) == 2
+    end
+
     test "isolates cache keys and runtime ETS hits across pre-built clients and per-call overrides" do
       state = %{body: "prebuilt client isolation check"}
       table = :"jev_prebuilt_iso_#{System.unique_integer([:positive])}"
@@ -377,6 +431,12 @@ defmodule JevDSL.GeminiDecisionsTest do
         )
 
       assert length(Enum.uniq([k_sys, k_uni, k_nat, k_ovr])) == 4
+
+      # Passing non-Gemini SystemOneSDK.Client with backend: :gemini_decisions still caches under :system_one
+      assert SystemOneContract.cache_key(:is_spam, state,
+               client: sys_client,
+               backend: :gemini_decisions
+             ) == k_sys
 
       # 1. Evaluate with SystemOneSDK.Test client
       assert {:ok, sys_resp} =

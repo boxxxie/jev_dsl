@@ -15,6 +15,7 @@ defmodule JevDSL.Runner do
   """
 
   alias JevDSL.{Cache, Error}
+  alias JevDSL.Providers.GeminiDecisions
 
   @client_sdk_options [
     :base_url,
@@ -210,9 +211,8 @@ defmodule JevDSL.Runner do
   end
 
   @doc false
-  def resolve_secret(nil), do: nil
+  def resolve_secret(atom) when is_atom(atom), do: nil
   def resolve_secret(str) when is_binary(str), do: String.trim(str)
-  def resolve_secret(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.trim()
 
   def resolve_secret({:system, env_var}) when is_binary(env_var) do
     resolve_secret(System.get_env(env_var))
@@ -237,6 +237,31 @@ defmodule JevDSL.Runner do
   end
 
   defp gemini_api_key(opts, otp_app) do
+    decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
+
+    base_url =
+      GeminiDecisions.resolve_base_url(
+        Keyword.put_new(opts, :otp_app, otp_app),
+        decisions_mode
+      )
+
+    env_fallbacks =
+      if decisions_mode == :native and
+           (is_nil(base_url) or
+              String.contains?(base_url, "generativelanguage.googleapis.com")) do
+        [
+          fn -> System.get_env("GEMINI_API_KEY") end,
+          fn -> System.get_env("LITELLM_API_KEY") end,
+          fn -> System.get_env("LITELLM_MASTER_KEY") end
+        ]
+      else
+        [
+          fn -> System.get_env("LITELLM_API_KEY") end,
+          fn -> System.get_env("LITELLM_MASTER_KEY") end,
+          fn -> System.get_env("GEMINI_API_KEY") end
+        ]
+      end
+
     resolve_key_candidates(
       opts,
       [:gemini_api_key, :api_key],
@@ -244,11 +269,8 @@ defmodule JevDSL.Runner do
         fn -> otp_app && Application.get_env(otp_app, :gemini_api_key) end,
         fn -> otp_app && Application.get_env(otp_app, :api_key) end,
         fn -> Application.get_env(:jev_dsl, :gemini_api_key) end,
-        fn -> Application.get_env(:jev_dsl, :api_key) end,
-        fn -> System.get_env("LITELLM_API_KEY") end,
-        fn -> System.get_env("LITELLM_MASTER_KEY") end,
-        fn -> System.get_env("GEMINI_API_KEY") end
-      ]
+        fn -> Application.get_env(:jev_dsl, :api_key) end
+      ] ++ env_fallbacks
     )
   end
 
@@ -294,7 +316,7 @@ defmodule JevDSL.Runner do
   defp explicit_blank_opt?(opts, keys) do
     Enum.any?(keys, fn key ->
       case Keyword.fetch(opts, key) do
-        {:ok, nil} -> true
+        {:ok, val} when val in [nil, false] -> true
         {:ok, bin} when is_binary(bin) -> String.trim(bin) == ""
         _ -> false
       end
@@ -356,8 +378,6 @@ defmodule JevDSL.Runner do
   end
 
   defp sync_client_opts(merged, opts) do
-    alias JevDSL.Providers.GeminiDecisions
-
     case Keyword.get(merged, :client) do
       %SystemOneSDK.Client{
         provider: GeminiDecisions,
@@ -366,93 +386,52 @@ defmodule JevDSL.Runner do
         sync_gemini_client_opts(merged, opts, client, pclient)
 
       %SystemOneSDK.Client{} ->
-        if Keyword.get(opts, :backend) == :gemini_decisions do
-          merged
-        else
-          Keyword.put(merged, :backend, :system_one)
-        end
+        Keyword.put(merged, :backend, :system_one)
 
       _ ->
         merged
     end
   end
 
-  defp sync_gemini_client_opts(merged, opts, client, pclient) do
-    alias JevDSL.Providers.GeminiDecisions
+  defp sync_gemini_client_opts(
+         merged,
+         opts,
+         %SystemOneSDK.Client{} = client,
+         %GeminiDecisions.Client{} = pclient
+       ) do
+    call_opts =
+      opts
+      |> Keyword.put_new(:otp_app, Keyword.get(merged, :otp_app))
+      |> maybe_put_client_model(client, pclient)
 
-    effective_mode =
-      Keyword.get(opts, :decisions_mode) ||
-        pclient.decisions_mode ||
-        Keyword.get(merged, :decisions_mode) ||
-        :unified
+    updated_pclient = GeminiDecisions.apply_call_opts(pclient, call_opts)
 
-    effective_auth = resolve_synced_auth_mode(opts, pclient, effective_mode, merged)
-
-    effective_model =
-      Keyword.get(opts, :model) ||
-        client.default_model ||
-        pclient.default_model ||
-        Keyword.get(merged, :model) ||
-        "gemini-decision-1"
-
-    effective_api_key = resolve_synced_api_key(opts, pclient)
-    effective_path = resolve_synced_decisions_path(opts, pclient, effective_mode, GeminiDecisions)
-
-    updated_pclient = %{
-      pclient
-      | decisions_mode: effective_mode,
-        auth_mode: effective_auth,
-        default_model: effective_model,
-        api_key: effective_api_key,
-        decisions_path: effective_path
-    }
-
-    updated_client = %{
+    updated_client = %SystemOneSDK.Client{
       client
       | provider_client: updated_pclient,
-        default_model: effective_model,
-        api_key: effective_api_key
+        default_model: updated_pclient.default_model,
+        api_key: updated_pclient.api_key,
+        base_url: updated_pclient.base_url,
+        context: updated_pclient.context,
+        pristine_client: updated_pclient.pristine_client
     }
 
     merged
     |> Keyword.put(:backend, :gemini_decisions)
-    |> Keyword.put(:decisions_mode, effective_mode)
-    |> Keyword.put(:auth_mode, effective_auth)
-    |> Keyword.put(:model, effective_model)
+    |> Keyword.put(:decisions_mode, updated_pclient.decisions_mode)
+    |> Keyword.put(:auth_mode, updated_pclient.auth_mode)
+    |> Keyword.put(:model, updated_pclient.default_model)
     |> Keyword.put(:client, updated_client)
   end
 
-  defp resolve_synced_auth_mode(opts, pclient, effective_mode, merged) do
-    cond do
-      auth = Keyword.get(opts, :auth_mode) ->
-        auth
-
-      Keyword.get(opts, :decisions_mode) && effective_mode != pclient.decisions_mode ->
-        if effective_mode == :native, do: :x_goog_api_key, else: :bearer
-
-      pclient.auth_mode ->
-        pclient.auth_mode
-
-      true ->
-        Keyword.get(merged, :auth_mode) ||
-          if(effective_mode == :native, do: :x_goog_api_key, else: :bearer)
-    end
-  end
-
-  defp resolve_synced_api_key(opts, pclient) do
-    resolve_override_secret(opts, [:api_key, :gemini_api_key], pclient.api_key)
-  end
-
-  defp resolve_synced_decisions_path(opts, pclient, effective_mode, gemini_mod) do
-    case Keyword.get(opts, :decisions_path) do
-      path when is_binary(path) and path != "" ->
-        path
-
-      _ when effective_mode != pclient.decisions_mode ->
-        gemini_mod.resolve_decisions_path(opts, effective_mode, pclient.base_url)
-
-      _ ->
-        pclient.decisions_path
+  defp maybe_put_client_model(call_opts, %SystemOneSDK.Client{} = client, pclient) do
+    if Keyword.has_key?(call_opts, :model) do
+      call_opts
+    else
+      case client.default_model || pclient.default_model do
+        nil -> call_opts
+        model -> Keyword.put(call_opts, :model, model)
+      end
     end
   end
 
@@ -460,30 +439,40 @@ defmodule JevDSL.Runner do
     use_tier2? = Keyword.get(opts, :use_tier2_cache, true)
     cache_only? = Keyword.get(opts, :cache_only, false)
 
-    has_client?(opts) or can_build_provider_client?(opts) or cache_only? or
+    has_client?(opts) or has_auth_for_provider?(opts) or cache_only? or
       (use_tier2? and has_tier2_cache?(opts))
   end
 
   defp can_build_provider_client?(opts) do
+    has_auth_for_provider?(opts) and has_provider_base_url?(opts)
+  end
+
+  defp has_auth_for_provider?(opts) do
     has_api_key?(opts) or keyless_gemini_decisions?(opts)
+  end
+
+  defp has_provider_base_url?(opts) do
+    case Keyword.get(opts, :backend, :system_one) do
+      :gemini_decisions ->
+        decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
+        base_url = GeminiDecisions.resolve_base_url(opts, decisions_mode)
+        is_binary(base_url) and String.trim(base_url) != ""
+
+      _ ->
+        true
+    end
   end
 
   defp keyless_gemini_decisions?(opts) do
     Keyword.get(opts, :backend) == :gemini_decisions and
-      (has_non_empty_headers?(Keyword.get(opts, :extra_headers)) or
-         has_non_empty_headers?(Keyword.get(opts, :headers)) or
-         has_non_blank_value?(Keyword.get(opts, :base_url)) or
-         not is_nil(Keyword.get(opts, :transport)) or
-         Keyword.has_key?(opts, :api_key) or
-         Keyword.has_key?(opts, :gemini_api_key))
+      (Keyword.get(opts, :auth_mode) == :none or
+         has_non_empty_headers?(Keyword.get(opts, :extra_headers)) or
+         has_non_empty_headers?(Keyword.get(opts, :headers)))
   end
 
   defp has_non_empty_headers?(headers) when is_map(headers), do: map_size(headers) > 0
   defp has_non_empty_headers?(headers) when is_list(headers), do: headers != []
   defp has_non_empty_headers?(_), do: false
-
-  defp has_non_blank_value?(val) when is_binary(val), do: String.trim(val) != ""
-  defp has_non_blank_value?(_), do: false
 
   defp has_client?(opts) do
     match?(%SystemOneSDK.Client{}, Keyword.get(opts, :client))
@@ -501,13 +490,13 @@ defmodule JevDSL.Runner do
 
     case Keyword.get(opts, :client) do
       %SystemOneSDK.Client{} = client when not cache_only? ->
-        client
+        {:ok, client}
 
       _ ->
-        if not cache_only? and can_build_provider_client?(opts) do
+        if not cache_only? and has_auth_for_provider?(opts) do
           build_provider_client(opts)
         else
-          nil
+          {:ok, nil}
         end
     end
   end
@@ -515,15 +504,33 @@ defmodule JevDSL.Runner do
   defp build_provider_client(opts) do
     case Keyword.get(opts, :backend, :system_one) do
       :gemini_decisions ->
-        provider_opts =
-          opts
-          |> Keyword.take(@client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path])
-          |> Keyword.put(:api_key, api_key(opts))
+        decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
+        base_url = GeminiDecisions.resolve_base_url(opts, decisions_mode)
 
-        SystemOneSDK.new_client(
-          provider: JevDSL.Providers.GeminiDecisions,
-          provider_opts: provider_opts
-        )
+        if is_binary(base_url) and String.trim(base_url) != "" do
+          provider_opts =
+            opts
+            |> Keyword.take(
+              @client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path, :otp_app]
+            )
+            |> Keyword.put(:base_url, base_url)
+            |> Keyword.put(:api_key, api_key(opts))
+
+          {:ok,
+           SystemOneSDK.new_client(
+             provider: GeminiDecisions,
+             provider_opts: provider_opts
+           )}
+        else
+          {:error,
+           %Error{
+             type: :invalid_request,
+             message:
+               "Missing :base_url for :gemini_decisions in #{inspect(decisions_mode)} mode. " <>
+                 "Pass :base_url, configure :litellm_base_url/:base_url, or set LITELLM_BASE_URL.",
+             details: %{decisions_mode: decisions_mode}
+           }}
+        end
 
       _ ->
         client_opts =
@@ -531,18 +538,20 @@ defmodule JevDSL.Runner do
           |> Keyword.take(@client_sdk_options)
           |> Keyword.put(:api_key, api_key(opts))
 
-        SystemOneSDK.new_client(client_opts)
+        {:ok, SystemOneSDK.new_client(client_opts)}
     end
   end
 
   defp dispatch_single(contract_mod, contract_key, state, opts) do
     prep = contract_mod.prepared(contract_key)
-    client = build_optional_client(opts)
 
     if Keyword.get(opts, :cache?, true) do
-      evaluate_single_cached(contract_key, client, state, prep, opts)
+      evaluate_single_cached(contract_key, state, prep, opts)
     else
-      evaluate_single_uncached(client, state, prep, opts)
+      case build_optional_client(opts) do
+        {:ok, client} -> evaluate_single_uncached(client, state, prep, opts)
+        {:error, _} = err -> err
+      end
     end
   end
 
@@ -561,7 +570,7 @@ defmodule JevDSL.Runner do
     end
   end
 
-  defp evaluate_single_cached(contract_key, client, state, prep, opts) do
+  defp evaluate_single_cached(contract_key, state, prep, opts) do
     hash_key = Cache.key(state, prep, opts)
     ctx = build_cache_ctx(contract_key, opts)
 
@@ -571,7 +580,7 @@ defmodule JevDSL.Runner do
         l1_result
 
       :miss ->
-        resolve_l1_miss(ctx, hash_key, client, state, prep)
+        resolve_l1_miss(ctx, hash_key, state, prep)
     end
   end
 
@@ -606,43 +615,61 @@ defmodule JevDSL.Runner do
     end
   end
 
-  defp resolve_l1_miss(ctx, hash_key, client, state, prep) do
+  defp resolve_l1_miss(ctx, hash_key, state, prep) do
     case ctx.use_l2? && Cache.adapter_get(ctx.l2, hash_key, ctx.l2_opts) do
       {:ok, l2_result} ->
         Cache.adapter_put(ctx.l1, hash_key, l2_result, ctx.l1_opts)
         l2_result
 
       _ ->
-        evaluate_live_and_persist(ctx, hash_key, client, state, prep)
+        evaluate_live_and_persist(ctx, hash_key, state, prep)
     end
   end
 
-  defp evaluate_live_and_persist(ctx, _hk, nil, _st, _prep), do: missing_client_error(ctx.opts)
+  defp evaluate_live_and_persist(ctx, hash_key, state, prep) do
+    case build_optional_client(ctx.opts) do
+      {:ok, nil} ->
+        missing_client_error(ctx.opts)
 
-  defp evaluate_live_and_persist(ctx, hash_key, client, state, prep) do
-    result = evaluate_single_uncached(client, state, prep, ctx.opts)
-    Cache.adapter_put(ctx.l1, hash_key, result, ctx.l1_opts)
+      {:ok, client} ->
+        result = evaluate_single_uncached(client, state, prep, ctx.opts)
+        Cache.adapter_put(ctx.l1, hash_key, result, ctx.l1_opts)
 
-    if ctx.persist_l2? and Cache.persistable?(result, ctx.opts) do
-      Cache.adapter_put_many(ctx.l2, [{hash_key, ctx.contract_key, state, result}], ctx.l2_opts)
+        if ctx.persist_l2? and Cache.persistable?(result, ctx.opts) do
+          Cache.adapter_put_many(
+            ctx.l2,
+            [{hash_key, ctx.contract_key, state, result}],
+            ctx.l2_opts
+          )
+        end
+
+        result
+
+      {:error, _} = err ->
+        err
     end
-
-    result
   end
 
   defp dispatch_many(contract_mod, contract_key, states, opts) do
     prep = contract_mod.prepared(contract_key)
-    client = build_optional_client(opts)
 
-    cond do
-      Keyword.get(opts, :cache?, true) ->
-        evaluate_many_cached(contract_key, client, states, prep, opts)
+    if Keyword.get(opts, :cache?, true) do
+      evaluate_many_cached(contract_key, states, prep, opts)
+    else
+      dispatch_many_uncached(states, prep, opts)
+    end
+  end
 
-      not is_nil(client) ->
+  defp dispatch_many_uncached(states, prep, opts) do
+    case build_optional_client(opts) do
+      {:ok, client} when not is_nil(client) ->
         SystemOneSDK.evaluate_many(client, states, prep, build_batch_sdk_opts(opts))
 
-      true ->
+      {:ok, nil} ->
         err = missing_client_error(opts)
+        Enum.map(states, fn _ -> err end)
+
+      {:error, _} = err ->
         Enum.map(states, fn _ -> err end)
     end
   end
@@ -664,7 +691,7 @@ defmodule JevDSL.Runner do
     |> Keyword.put(:on_error, :collect)
   end
 
-  defp evaluate_many_cached(contract_key, client, states, prep, opts) do
+  defp evaluate_many_cached(contract_key, states, prep, opts) do
     ctx = build_cache_ctx(contract_key, opts)
 
     indexed_states =
@@ -678,7 +705,7 @@ defmodule JevDSL.Runner do
       Cache.adapter_put_many(ctx.l2, l1_backfills, ctx.l2_opts)
     end
 
-    final_map = resolve_many_misses(misses, cached_map, client, prep, ctx)
+    final_map = resolve_many_misses(misses, cached_map, prep, ctx)
     Enum.map(0..(length(states) - 1), fn idx -> Map.fetch!(final_map, idx) end)
   end
 
@@ -753,17 +780,28 @@ defmodule JevDSL.Runner do
     end
   end
 
-  defp resolve_many_misses([], cached_map, _client, _prep, _ctx), do: cached_map
+  defp resolve_many_misses([], cached_map, _prep, _ctx), do: cached_map
 
-  defp resolve_many_misses(misses, cached_map, nil, _prep, ctx) do
-    err = missing_client_error(ctx.opts)
+  defp resolve_many_misses(misses, cached_map, prep, ctx) do
+    case build_optional_client(ctx.opts) do
+      {:ok, nil} ->
+        fill_many_error(misses, cached_map, missing_client_error(ctx.opts))
 
+      {:ok, client} ->
+        execute_many_misses(misses, cached_map, client, prep, ctx)
+
+      {:error, _} = err ->
+        fill_many_error(misses, cached_map, err)
+    end
+  end
+
+  defp fill_many_error(misses, cached_map, err) do
     Enum.reduce(misses, cached_map, fn {idx, _st, _hk}, acc ->
       Map.put(acc, idx, err)
     end)
   end
 
-  defp resolve_many_misses(misses, cached_map, client, prep, ctx) do
+  defp execute_many_misses(misses, cached_map, client, prep, ctx) do
     miss_states = Enum.map(misses, fn {_idx, st, _hk} -> st end)
 
     live_results =

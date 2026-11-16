@@ -93,7 +93,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
   end
 
   test "evaluates noul, choice, score, and defjev on gemini-decision-1 via unified /v1/decisions" do
-    base_url = System.get_env("LITELLM_BASE_URL") || "http://100.88.180.12:4000"
+    base_url = require_env_url!("LITELLM_BASE_URL", "unified /v1/decisions")
     api_opts = litellm_api_key_opt()
 
     assert {:ok, resp} =
@@ -175,7 +175,12 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
   end
 
   test "evaluates noul, choice, score, and defjev on gemini-decision-1 via native /gemini/v1beta/decisions passthrough" do
-    base_url = System.get_env("GEMINI_DECISIONS_BASE_URL") || "https://2-29-102-196.sslip.io"
+    base_url =
+      require_env_url!(
+        "GEMINI_DECISIONS_BASE_URL",
+        "native /gemini/v1beta/decisions passthrough"
+      )
+
     api_opts = native_api_key_opt(base_url)
 
     assert {:ok, resp} =
@@ -256,6 +261,17 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
     assert JevDSL.choice?(routine_prio, :p2)
   end
 
+  defp require_env_url!(env_var, label) do
+    case System.get_env(env_var) do
+      url when is_binary(url) ->
+        trimmed = String.trim(url)
+        if trimmed == "", do: flunk("Set #{env_var} to run live #{label} tests"), else: trimmed
+
+      nil ->
+        flunk("Set #{env_var} to run live #{label} tests")
+    end
+  end
+
   defp litellm_api_key_opt do
     key =
       Enum.find(
@@ -275,10 +291,7 @@ defmodule JevDSL.Live.GeminiDecisionsLiveTest do
 
   defp native_api_key_opt(base_url) do
     if String.contains?(base_url, "generativelanguage.googleapis.com") do
-      case System.get_env("GEMINI_API_KEY") do
-        val when is_binary(val) and val != "" -> [api_key: val]
-        _ -> []
-      end
+      []
     else
       litellm_api_key_opt()
     end
