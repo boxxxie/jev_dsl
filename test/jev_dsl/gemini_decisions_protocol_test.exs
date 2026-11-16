@@ -1,7 +1,10 @@
 defmodule JevDSL.GeminiDecisionsProtocolTest do
   use ExUnit.Case, async: true
 
-  alias JevDSL.Providers.GeminiDecisions.Protocol
+  alias SystemOneSDK.Answer.Choice
+  alias SystemOneSDK.Error, as: SDKError
+  alias SystemOneSDK.Providers.GeminiDecisions.Protocol
+  alias SystemOneSDK.SemanticResponse
 
   defmodule SampleContracts do
     use JevDSL,
@@ -29,6 +32,30 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       incomplete -> "Missing required fields."
       partial -> "Some fields are populated."
       complete -> "All required fields are populated."
+    end
+
+    defscore :numeric_rating,
+      ask: "Rate 1 to 3." do
+      "1" -> "Poor"
+      "2" -> "Okay"
+      "3" -> "Great"
+    end
+
+    defchoice :quad_choice,
+      ask: "Pick one of four." do
+      opt_a -> "Option A"
+      opt_b -> "Option B"
+      opt_c -> "Option C"
+      opt_d -> "Option D"
+    end
+
+    defchoice :penta_choice,
+      ask: "Pick one of five." do
+      c1 -> "One"
+      c2 -> "Two"
+      c3 -> "Three"
+      c4 -> "Four"
+      c5 -> "Five"
     end
 
     defjev :triage do
@@ -369,8 +396,8 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
 
       # Contradictory boolean decision vs P(true) probability is rejected
       assert {:error,
-              %JevDSL.Error{
-                type: :invalid_response,
+              %SDKError{
+                type: :response_validation,
                 details: %{reason: :contradictory_noul_polarity}
               }} =
                Protocol.decode_response(
@@ -385,7 +412,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       noul_prep = SampleContracts.prepared(:is_spam)
 
       # Out-of-contract choice rejected
-      assert {:error, %JevDSL.Error{type: :invalid_response}} =
+      assert {:error, %SDKError{type: :response_validation}} =
                Protocol.decode_response(
                  %{"choice" => "hallucinated", "confidence" => 0.95},
                  choice_prep,
@@ -413,14 +440,14 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       assert JevDSL.choice?(enriched_tone, :positive)
 
       # Flat choice or score payload rejected on single-question noul contract
-      assert {:error, %JevDSL.Error{type: :invalid_response}} =
+      assert {:error, %SDKError{type: :response_validation}} =
                Protocol.decode_response(
                  %{"choice" => "positive", "confidence" => 0.92},
                  noul_prep,
                  "gemini-decision-1"
                )
 
-      assert {:error, %JevDSL.Error{type: :invalid_response}} =
+      assert {:error, %SDKError{type: :response_validation}} =
                Protocol.decode_response(
                  %{"score" => 1.5, "confidence" => 0.92},
                  noul_prep,
@@ -516,7 +543,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
 
       # Out-of-range score rejected
       assert {:error,
-              %JevDSL.Error{type: :invalid_response, details: %{reason: :score_out_of_range}}} =
+              %SDKError{type: :response_validation, details: %{reason: :score_out_of_range}}} =
                Protocol.decode_response(
                  %{"score" => 2.5, "confidence" => 0.9},
                  prep,
@@ -571,7 +598,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
 
       # Out-of-bounds confidences and probabilities rejected
       assert {:error,
-              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_confidence}}} =
+              %SDKError{type: :response_validation, details: %{reason: :invalid_confidence}}} =
                Protocol.decode_response(
                  %{"choice" => "positive", "confidence" => 1.2},
                  choice_prep,
@@ -579,7 +606,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
                )
 
       assert {:error,
-              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_probabilities}}} =
+              %SDKError{type: :response_validation, details: %{reason: :invalid_probabilities}}} =
                Protocol.decode_response(
                  %{
                    "choice" => "positive",
@@ -591,7 +618,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
                )
 
       assert {:error,
-              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_confidence}}} =
+              %SDKError{type: :response_validation, details: %{reason: :invalid_confidence}}} =
                Protocol.decode_response(
                  %{"score" => 1.5, "confidence" => -0.2},
                  score_prep,
@@ -599,7 +626,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
                )
 
       assert {:error,
-              %JevDSL.Error{type: :invalid_response, details: %{reason: :invalid_probabilities}}} =
+              %SDKError{type: :response_validation, details: %{reason: :invalid_probabilities}}} =
                Protocol.decode_response(
                  %{
                    "score" => 1.5,
@@ -615,14 +642,14 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       noul_prep = SampleContracts.prepared(:is_spam)
 
       for bad_name <- [%{"bad" => 1}, ["x"], nil, ""] do
-        assert {:error, %JevDSL.Error{type: :invalid_response}} =
+        assert {:error, %SDKError{type: :response_validation}} =
                  Protocol.decode_response(
                    %{"answers" => [%{"name" => bad_name, "probability" => 0.5}]},
                    noul_prep,
                    "gemini-decision-1"
                  )
 
-        assert {:error, %JevDSL.Error{type: :invalid_response}} =
+        assert {:error, %SDKError{type: :response_validation}} =
                  Protocol.decode_response(
                    %{"answers" => %{bad_name => %{"probability" => 0.5}}},
                    noul_prep,
@@ -635,7 +662,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
       choice_prep = SampleContracts.prepared(:sentiment)
       score_prep = SampleContracts.prepared(:completeness)
 
-      assert {:error, %JevDSL.Error{type: :invalid_response}} =
+      assert {:error, %SDKError{type: :response_validation}} =
                Protocol.decode_response(
                  %{
                    "choice" => "positive",
@@ -646,7 +673,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
                  "gemini-decision-1"
                )
 
-      assert {:error, %JevDSL.Error{type: :invalid_response}} =
+      assert {:error, %SDKError{type: :response_validation}} =
                Protocol.decode_response(
                  %{
                    "choice" => "positive",
@@ -657,7 +684,7 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
                  "gemini-decision-1"
                )
 
-      assert {:error, %JevDSL.Error{type: :invalid_response}} =
+      assert {:error, %SDKError{type: :response_validation}} =
                Protocol.decode_response(
                  %{
                    "score" => 1.5,
@@ -672,8 +699,341 @@ defmodule JevDSL.GeminiDecisionsProtocolTest do
     test "returns structured error on malformed response body" do
       prep = SampleContracts.prepared(:is_spam)
 
-      assert {:error, %JevDSL.Error{}} =
+      assert {:error, %SDKError{}} =
                Protocol.decode_response("not a map", prep, "gemini-decision-1")
+    end
+
+    test "backfills choice and score probabilities safely without inventing margins or flipping winner" do
+      two_prep = SampleContracts.prepared(:sentiment)
+      four_prep = SampleContracts.prepared(:quad_choice)
+      five_prep = SampleContracts.prepared(:penta_choice)
+      score_prep = SampleContracts.prepared(:completeness)
+
+      # conf < 1/N across 2 options (0.40 < 0.50) does not give unchosen option 0.60 > 0.40
+      assert {:ok, resp2} =
+               Protocol.decode_response(
+                 %{"choice" => "positive", "confidence" => 0.40},
+                 two_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, enriched2} = SemanticResponse.enrich(resp2, two_prep, 0.02)
+      assert {:ok, tone2} = JevDSL.fetch_answer(enriched2, :tone)
+      assert tone2.confidence == 0.40
+      assert tone2.probabilities[:positive] >= tone2.probabilities[:negative]
+      assert Choice.margin(tone2) == 0.0
+
+      # conf < 1/N across 4 options (0.20 < 0.25) keeps choice >= every other option
+      assert {:ok, resp4} =
+               Protocol.decode_response(
+                 %{"choice" => "opt_a", "confidence" => 0.20, "probabilities" => %{}},
+                 four_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, enriched4} = SemanticResponse.enrich(resp4, four_prep, 0.02)
+      assert {:ok, ans4} = JevDSL.fetch_answer(enriched4, :quad_choice)
+      assert ans4.confidence == 0.20
+      assert Enum.all?(ans4.probabilities, fn {_k, p} -> p <= ans4.probabilities[:opt_a] end)
+      assert Choice.margin(ans4) == 0.0
+
+      # 1/N <= conf < 0.5 (0.25 across 5 options) preserves zero margin instead of inventing 0.0625
+      assert {:ok, resp5} =
+               Protocol.decode_response(
+                 %{"choice" => "c1", "confidence" => 0.25, "probabilities" => []},
+                 five_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, enriched5} = SemanticResponse.enrich(resp5, five_prep, 0.02)
+      assert {:ok, ans5} = JevDSL.fetch_answer(enriched5, :penta_choice)
+      assert Choice.margin(ans5) <= 1.0e-12
+
+      # ScoreAnswer backfills omitted/empty probabilities to pass SemanticResponse.enrich/3
+      assert {:ok, score_resp} =
+               Protocol.decode_response(
+                 %{"score" => 1.75, "confidence" => 0.85},
+                 score_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, score_enriched} =
+               SemanticResponse.enrich(score_resp, score_prep, 0.02)
+
+      assert {:ok, score_ans} = JevDSL.fetch_answer(score_enriched, :completeness)
+      assert score_ans.probabilities == %{0 => 0.0, 1 => 0.25, 2 => 0.75}
+    end
+
+    test "does not fabricate confidence 1.0 when confidence is omitted" do
+      score_prep = SampleContracts.prepared(:completeness)
+      choice_prep = SampleContracts.prepared(:sentiment)
+      noul_prep = SampleContracts.prepared(:is_spam)
+
+      # Score with dead-even probabilities and omitted confidence derives max prob (0.34), not 1.0
+      assert {:ok, even_score_resp} =
+               Protocol.decode_response(
+                 %{
+                   "answers" => %{
+                     "completeness" => %{
+                       "score" => 1.0,
+                       "probabilities" => %{"0" => 0.34, "1" => 0.33, "2" => 0.33}
+                     }
+                   }
+                 },
+                 score_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, even_score} = JevDSL.fetch_answer(even_score_resp, :completeness)
+      assert even_score.confidence == 0.34
+      refute JevDSL.Cache.cacheable?({:ok, even_score_resp}, min_confidence: 0.65)
+      assert JevDSL.Cache.resolve_ttl({:ok, even_score_resp}, min_confidence: 0.65) == {:ok, 300}
+
+      # Score and choice with both confidence and probabilities omitted get confidence 0.0
+      assert {:ok, bare_score_resp} =
+               Protocol.decode_response(%{"score" => 1.0}, score_prep, "gemini-decision-1")
+
+      assert {:ok, bare_score} = JevDSL.fetch_answer(bare_score_resp, :completeness)
+      assert bare_score.confidence == 0.0
+      refute JevDSL.Cache.cacheable?({:ok, bare_score_resp}, min_confidence: 0.65)
+
+      assert {:ok, bare_choice_resp} =
+               Protocol.decode_response(
+                 %{"choice" => "positive"},
+                 choice_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, bare_choice} = JevDSL.fetch_answer(bare_choice_resp, :tone)
+      assert bare_choice.confidence == 0.0
+      refute JevDSL.Cache.cacheable?({:ok, bare_choice_resp}, min_confidence: 0.65)
+
+      # Boolean noul without confidence or probability is rejected instead of fabricating 1.0/0.0
+      assert {:error,
+              %SDKError{type: :response_validation, details: %{reason: :missing_noul_confidence}}} =
+               Protocol.decode_response(%{"noul" => true}, noul_prep, "gemini-decision-1")
+
+      assert {:error,
+              %SDKError{type: :response_validation, details: %{reason: :missing_noul_confidence}}} =
+               Protocol.decode_response(%{"decision" => false}, noul_prep, "gemini-decision-1")
+    end
+
+    test "handles numeric score labels, positional/criteria native score probs, 1-level bounds, and Proto3 zero omissions" do
+      num_prep = SampleContracts.prepared(:numeric_rating)
+      triage_prep = SampleContracts.prepared(:triage)
+      score_prep = SampleContracts.prepared(:completeness)
+      noul_prep = SampleContracts.prepared(:is_spam)
+
+      # 1. Numeric labels :"1", :"2", :"3" do not collide with 0-based keys "0", "1", "2"
+      assert {:ok, num_idx_resp} =
+               Protocol.decode_response(
+                 %{
+                   "answers" => %{
+                     "numeric_rating" => %{
+                       "score" => 1.80,
+                       "confidence" => 0.85,
+                       "probabilities" => %{"0" => 0.05, "1" => 0.10, "2" => 0.85}
+                     }
+                   }
+                 },
+                 num_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, num_idx_ans} = JevDSL.fetch_answer(num_idx_resp, :numeric_rating)
+      assert num_idx_ans.probabilities == %{0 => 0.05, 1 => 0.10, 2 => 0.85}
+
+      assert {:ok, num_lbl_resp} =
+               Protocol.decode_response(
+                 %{
+                   "answers" => %{
+                     "numeric_rating" => %{
+                       "score" => 1.80,
+                       "confidence" => 0.85,
+                       "probabilities" => %{"1" => 0.05, "2" => 0.10, "3" => 0.85}
+                     }
+                   }
+                 },
+                 num_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, num_lbl_ans} = JevDSL.fetch_answer(num_lbl_resp, :numeric_rating)
+      assert num_lbl_ans.probabilities == %{0 => 0.05, 1 => 0.10, 2 => 0.85}
+
+      # 2. Native positional list and criteria-keyed score probs, and unified 1-based value with exact label
+      assert {:ok, pos_resp} =
+               Protocol.decode_response(
+                 %{
+                   "answers" => %{
+                     "completeness" => %{
+                       "score" => 1.77,
+                       "confidence" => 0.82,
+                       "probabilities" => [0.05, 0.13, 0.82]
+                     }
+                   }
+                 },
+                 score_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, pos_ans} = JevDSL.fetch_answer(pos_resp, :completeness)
+      assert pos_ans.probabilities == %{0 => 0.05, 1 => 0.13, 2 => 0.82}
+
+      assert {:ok, crit_resp} =
+               Protocol.decode_response(
+                 %{
+                   "answers" => %{
+                     "clarity" => %{
+                       "score" => 1.77,
+                       "confidence" => 0.82,
+                       "probabilities" => %{"Unclear" => 0.05, "Partial" => 0.13, "Clear" => 0.82}
+                     },
+                     "urgent" => %{"noul" => 0.1},
+                     "priority" => %{
+                       "choice" => "p0",
+                       "confidence" => 0.9,
+                       "probabilities" => %{"p0" => 0.9, "p2" => 0.1}
+                     }
+                   }
+                 },
+                 triage_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, crit_ans} = JevDSL.fetch_answer(crit_resp, :clarity)
+      assert crit_ans.probabilities == %{0 => 0.05, 1 => 0.13, 2 => 0.82}
+
+      assert {:ok, one_based_resp} =
+               Protocol.decode_response(
+                 %{
+                   "answers" => [
+                     %{
+                       "name" => "completeness",
+                       "type" => "score",
+                       "score" => 1.77,
+                       "confidence" => 0.82,
+                       "probabilities" => [
+                         %{"value" => 1, "label" => "incomplete", "probability" => 0.05},
+                         %{"value" => 2, "label" => "partial", "probability" => 0.13},
+                         %{"value" => 3, "label" => "complete", "probability" => 0.82}
+                       ]
+                     }
+                   ]
+                 },
+                 score_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, one_based_ans} = JevDSL.fetch_answer(one_based_resp, :completeness)
+      assert one_based_ans.probabilities == %{0 => 0.05, 1 => 0.13, 2 => 0.82}
+
+      # 3. 1-level score bounds check rejects score = 1.0 and accepts 0.0
+      one_level_prep = %{
+        score_prep
+        | ordered_keys: [:single],
+          definitions: %{
+            "single" => %{
+              type: "score",
+              levels: [%{index: 0, label: "only", description: "Only level"}]
+            }
+          }
+      }
+
+      assert {:error,
+              %SDKError{type: :response_validation, details: %{reason: :score_out_of_range}}} =
+               Protocol.decode_response(
+                 %{"score" => 1.0, "confidence" => 0.9},
+                 one_level_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, one_lvl_ok} =
+               Protocol.decode_response(
+                 %{"score" => 0.0, "confidence" => 0.9},
+                 one_level_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, one_lvl_ans} = JevDSL.fetch_answer(one_lvl_ok, :single)
+      assert one_lvl_ans.score == 0.0
+
+      # 4. Proto3 scalar omission: omitted score: 0.0 and omitted bool decision = false on noul
+      assert {:ok, proto_score_resp} =
+               Protocol.decode_response(
+                 %{
+                   "answers" => %{
+                     "completeness" => %{
+                       "confidence" => 0.95,
+                       "probabilities" => %{"0" => 0.95, "1" => 0.05, "2" => 0.0}
+                     }
+                   }
+                 },
+                 score_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, proto_score} = JevDSL.fetch_answer(proto_score_resp, :completeness)
+      assert proto_score.score == 0.0
+
+      assert {:ok, proto_noul_resp} =
+               Protocol.decode_response(
+                 %{"answers" => %{"is_spam" => %{"confidence" => 0.98}}},
+                 noul_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, %{noul: proto_noul_prob}} = JevDSL.fetch_answer(proto_noul_resp, :is_spam)
+      assert_in_delta proto_noul_prob, 0.02, 1.0e-6
+
+      assert {:ok, typed_proto_noul} =
+               Protocol.decode_response(
+                 %{"type" => "noul", "confidence" => 0.98},
+                 noul_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, %{noul: typed_prob}} = JevDSL.fetch_answer(typed_proto_noul, :is_spam)
+      assert_in_delta typed_prob, 0.02, 1.0e-6
+    end
+
+    test "guards flat fallback against answers: null and error envelopes, and accepts unnamed single-item answers list" do
+      noul_prep = SampleContracts.prepared(:is_spam)
+      choice_prep = SampleContracts.prepared(:sentiment)
+
+      assert {:error, %SDKError{type: :response_validation}} =
+               Protocol.decode_response(
+                 %{"answers" => nil, "result" => 0.0},
+                 noul_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:error, %SDKError{type: :api_error}} =
+               Protocol.decode_response(
+                 %{"error" => %{"message" => "Rate limit"}, "value" => 0.0},
+                 noul_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, unnamed_list_resp} =
+               Protocol.decode_response(
+                 %{"answers" => [%{"choice" => "positive", "confidence" => 0.95}]},
+                 choice_prep,
+                 "gemini-decision-1"
+               )
+
+      assert {:ok, tone} = JevDSL.fetch_answer(unnamed_list_resp, :tone)
+      assert JevDSL.choice?(tone, :positive)
+    end
+
+    test "encode_request_safe/4 returns structured error on unencodable input state" do
+      prep = SampleContracts.prepared(:is_spam)
+
+      assert {:error, %SDKError{type: :invalid_request}} =
+               Protocol.encode_request_safe(%{pid: self()}, prep, "gemini-decision-1", :unified)
+
+      assert {:error, %SDKError{type: :invalid_request}} =
+               Protocol.encode_request_safe(<<255, 255>>, prep, "gemini-decision-1", :native)
     end
   end
 end

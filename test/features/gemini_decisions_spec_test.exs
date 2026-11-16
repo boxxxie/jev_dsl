@@ -177,14 +177,14 @@ defmodule JevDSL.Features.GeminiDecisionsSpecTest do
     |> given_decision_backend(decisions_mode: :unified)
     |> given_upstream_http_error(502, "Bad Gateway")
     |> when_evaluating(:is_spam, %{body: "upstream 502"})
-    |> then_error_is(:provider_error)
+    |> then_error_is(:internal_server)
     |> then_network_calls(1)
 
     TriageContracts
     |> given_decision_backend(decisions_mode: :unified)
     |> given_upstream_malformed_response("not-valid-json")
     |> when_evaluating(:is_spam, %{body: "bad json"})
-    |> then_error_is(:invalid_response)
+    |> then_error_is(:response_validation)
     |> then_network_calls(1)
   end
 

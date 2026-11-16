@@ -3,7 +3,7 @@ defmodule JevDSL.GeminiDecisionsTest do
   use ExUnitProperties
 
   alias JevDSL.ATDD.GeminiDecisionsDriver, as: Driver
-  alias JevDSL.Providers.GeminiDecisions
+  alias SystemOneSDK.Providers.GeminiDecisions
 
   defmodule GeminiUnifiedContract do
     use JevDSL,
@@ -144,7 +144,7 @@ defmodule JevDSL.GeminiDecisionsTest do
     end
 
     test "requires explicit/configured base_url for :unified mode without private IP default" do
-      assert_raise ArgumentError, ~r/Missing :base_url/, fn ->
+      assert_raise SystemOneSDK.Error, ~r/Missing :base_url/, fn ->
         GeminiDecisions.new_client(decisions_mode: :unified)
       end
 
@@ -221,22 +221,22 @@ defmodule JevDSL.GeminiDecisionsTest do
       refute function_exported?(GeminiDecisions, :connection_error, 2)
     end
 
-    test "does not falsely mark nil-key contracts available without auth_mode: :none or custom headers" do
+    test "does not falsely mark blank-key contracts available without auth_mode: :none or custom headers" do
       refute GeminiUnifiedContract.available?(
                base_url: "http://localhost:4000",
-               api_key: nil
+               api_key: ""
              )
 
       assert {:error, :no_api_key} =
                GeminiUnifiedContract.evaluate(:is_spam, %{body: "hi"},
                  base_url: "http://localhost:4000",
-                 api_key: nil,
+                 api_key: "",
                  cache?: false
                )
 
       refute GeminiNativeContract.available?(
                base_url: "https://generativelanguage.googleapis.com",
-               gemini_api_key: nil
+               gemini_api_key: false
              )
     end
 
@@ -371,7 +371,7 @@ defmodule JevDSL.GeminiDecisionsTest do
               assert req.headers["Authorization"] == "Bearer sk-uni"
               {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.81}]}}
 
-            {"/gemini/v1beta/decisions", "gemini-decision-1"} ->
+            {"/v1beta/decisions", "gemini-decision-1"} ->
               case req.headers["x-goog-api-key"] do
                 "sk-nat" ->
                   {200, %{"answers" => %{"is_spam" => %{"noul" => 0.82}}}}
@@ -380,7 +380,7 @@ defmodule JevDSL.GeminiDecisionsTest do
                   {200, %{"answers" => %{"is_spam" => %{"noul" => 0.84}}}}
               end
 
-            {"/gemini/v1beta/decisions", "gemini-decision-2"} ->
+            {"/v1beta/decisions", "gemini-decision-2"} ->
               assert req.headers["x-goog-api-key"] == "sk-override"
               {200, %{"answers" => %{"is_spam" => %{"noul" => 0.83}}}}
           end
@@ -532,6 +532,295 @@ defmodule JevDSL.GeminiDecisionsTest do
 
       SystemOneSDK.Test.verify!(sys_client)
       SystemOneSDK.Test.close(sys_client)
+    end
+  end
+
+  defmodule ModuleConfiguredGeminiContract do
+    use JevDSL,
+      otp_app: :jev_dsl,
+      backend: :gemini_decisions,
+      decisions_mode: :native,
+      model: "gemini-decision-module",
+      gemini_api_key: "sk-module",
+      decisions_path: "/module/custom"
+
+    defnoul :is_spam do
+      "Is this spam?"
+    end
+  end
+
+  defmodule BareNativeContract do
+    use JevDSL,
+      otp_app: :jev_dsl,
+      backend: :gemini_decisions,
+      decisions_mode: :native,
+      model: "gemini-decision-module"
+
+    defnoul :is_spam do
+      "Is this spam?"
+    end
+  end
+
+  describe "option precedence, runtime validation, path resolution, and encoding safety" do
+    test "preserves pre-built :client api_key when api_key: nil is passed and avoids module-level clobbering" do
+      pid =
+        Driver.start_stub(fn req ->
+          case req.path do
+            "/client/custom" ->
+              assert req.headers["Authorization"] == "Bearer sk-client"
+              {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.14}]}}
+
+            "/v1beta/decisions" ->
+              assert req.headers["x-goog-api-key"] == "sk-bare"
+              decoded = Jason.decode!(req.body)
+              assert decoded["model"] == "gemini-decision-module"
+              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.24}}}}
+          end
+        end)
+
+      custom_client =
+        SystemOneSDK.new_client(
+          provider: GeminiDecisions,
+          provider_opts: [
+            decisions_mode: :unified,
+            auth_mode: :bearer,
+            api_key: "sk-client",
+            decisions_path: "/client/custom",
+            base_url: "https://client.example.invalid",
+            transport: Driver,
+            transport_opts: [stub_pid: pid],
+            retry: false
+          ]
+        )
+
+      # Passing api_key: nil preserves custom_client.api_key and module gemini_api_key/decisions_path do not clobber
+      assert {:ok, resp1} =
+               ModuleConfiguredGeminiContract.evaluate(:is_spam, %{body: "hi"},
+                 client: custom_client,
+                 api_key: nil,
+                 cache?: false
+               )
+
+      assert {:ok, %{noul: 0.14}} = JevDSL.fetch_answer(resp1, :is_spam)
+
+      # Passing a bare transport client inherits module decisions_mode (:native) and model
+      # instead of resetting to :unified
+      bare_client =
+        SystemOneSDK.new_client(
+          provider: GeminiDecisions,
+          provider_opts: [
+            api_key: "sk-bare",
+            base_url: "https://generativelanguage.googleapis.com",
+            transport: Driver,
+            transport_opts: [stub_pid: pid],
+            retry: false
+          ]
+        )
+
+      assert {:ok, resp2} =
+               BareNativeContract.evaluate(:is_spam, %{body: "bare"},
+                 client: bare_client,
+                 cache?: false
+               )
+
+      assert {:ok, %{noul: 0.24}} = JevDSL.fetch_answer(resp2, :is_spam)
+      assert Driver.request_count(pid) == 2
+    end
+
+    test "returns invalid_options on runtime typos in :backend, :decisions_mode, or :auth_mode" do
+      assert {:error, %JevDSL.Error{type: :invalid_options}} =
+               SystemOneContract.evaluate(:is_spam, %{body: "x"},
+                 backend: :gemini_decision,
+                 cache?: false
+               )
+
+      assert {:error, %JevDSL.Error{type: :invalid_options}} =
+               GeminiUnifiedContract.evaluate(:is_spam, %{body: "x"},
+                 decisions_mode: :natve,
+                 base_url: "http://localhost:4000",
+                 gemini_api_key: "sk-1",
+                 cache?: false
+               )
+
+      assert {:error, %JevDSL.Error{type: :invalid_options}} =
+               GeminiUnifiedContract.evaluate(:is_spam, %{body: "x"},
+                 auth_mode: :typo,
+                 base_url: "http://localhost:4000",
+                 gemini_api_key: "sk-1",
+                 cache?: false
+               )
+
+      assert [{:error, %JevDSL.Error{type: :invalid_options}}] =
+               SystemOneContract.evaluate_many(:is_spam, [%{body: "x"}],
+                 backend: :gemini_decision,
+                 cache?: false
+               )
+
+      refute SystemOneContract.available?(backend: :gemini_decision)
+      refute GeminiUnifiedContract.available?(decisions_mode: :natve, base_url: "http://x")
+      refute GeminiUnifiedContract.available?(auth_mode: :typo, base_url: "http://x")
+
+      assert_raise JevDSL.Error, fn ->
+        JevDSL.Runner.api_key(backend: :gemini_decision)
+      end
+
+      assert_raise JevDSL.Error, fn ->
+        JevDSL.Cache.key(%{body: "x"}, SystemOneContract.prepared(:is_spam),
+          backend: :gemini_decision
+        )
+      end
+
+      assert_raise SystemOneSDK.Error, fn ->
+        GeminiDecisions.new_client(decisions_mode: :natve, base_url: "http://localhost:4000")
+      end
+
+      uni_client =
+        SystemOneSDK.new_client(
+          provider: GeminiDecisions,
+          provider_opts: [
+            decisions_mode: :unified,
+            api_key: "sk-1",
+            base_url: "http://localhost:4000",
+            transport: Driver,
+            transport_opts: [stub_pid: Driver.start_stub(fn _ -> {200, %{}} end)]
+          ]
+        )
+
+      assert {:error, %SystemOneSDK.Error{type: :configuration}} =
+               GeminiDecisions.system_one_prepared(
+                 uni_client.provider_client,
+                 %{body: "x"},
+                 GeminiUnifiedContract.prepared(:is_spam),
+                 auth_mode: :typo
+               )
+    end
+
+    test "avoids path duplication on /v1, /v1beta, and /gemini base_urls and supports non-LiteLLM native proxies" do
+      assert GeminiDecisions.resolve_decisions_path([], :unified, "http://host:4000") ==
+               "/v1/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path([], :unified, "http://host:4000/v1") ==
+               "/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path([], :unified, "http://host:4000/v1/") ==
+               "/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path([], :unified, "https://proxy.internal/api") ==
+               "/v1/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path(
+               [],
+               :native,
+               "https://generativelanguage.googleapis.com"
+             ) == "/v1beta/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path(
+               [],
+               :native,
+               "https://generativelanguage.googleapis.com/v1beta"
+             ) == "/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path(
+               [],
+               :native,
+               "https://gateway.ai.cloudflare.com/v1/acc/gw/google-ai-studio"
+             ) == "/v1beta/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path([], :native, "http://host:4000/gemini") ==
+               "/v1beta/decisions"
+
+      assert GeminiDecisions.resolve_decisions_path(
+               [decisions_path: "/gemini/v1beta/decisions"],
+               :native,
+               "http://host:4000"
+             ) == "/gemini/v1beta/decisions"
+
+      pid =
+        Driver.start_stub(fn req ->
+          case req.url do
+            "http://host:4000/v1/decisions" ->
+              {200, %{"answers" => [%{"name" => "is_spam", "probability" => 0.1}]}}
+
+            "http://host:4000/gemini/v1beta/decisions" ->
+              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.2}}}}
+
+            "https://gateway.ai.cloudflare.com/v1/acc/gw/google-ai-studio/v1beta/decisions" ->
+              {200, %{"answers" => %{"is_spam" => %{"noul" => 0.3}}}}
+          end
+        end)
+
+      assert {:ok, _} =
+               GeminiUnifiedContract.evaluate(:is_spam, %{body: "v1 base"},
+                 base_url: "http://host:4000/v1",
+                 gemini_api_key: "sk-1",
+                 transport: Driver,
+                 transport_opts: [stub_pid: pid],
+                 cache?: false,
+                 retry: false
+               )
+
+      assert {:ok, _} =
+               GeminiNativeContract.evaluate(:is_spam, %{body: "gemini base"},
+                 base_url: "http://host:4000/gemini",
+                 gemini_api_key: "sk-1",
+                 transport: Driver,
+                 transport_opts: [stub_pid: pid],
+                 cache?: false,
+                 retry: false
+               )
+
+      assert {:ok, _} =
+               GeminiNativeContract.evaluate(:is_spam, %{body: "cf gateway"},
+                 base_url: "https://gateway.ai.cloudflare.com/v1/acc/gw/google-ai-studio",
+                 gemini_api_key: "sk-1",
+                 transport: Driver,
+                 transport_opts: [stub_pid: pid],
+                 cache?: false,
+                 retry: false
+               )
+
+      assert Driver.request_count(pid) == 3
+    end
+
+    test "returns structured errors instead of raising on unencodable state values" do
+      pid = Driver.start_stub(fn _ -> {200, %{}} end)
+
+      client =
+        SystemOneSDK.new_client(
+          provider: GeminiDecisions,
+          provider_opts: [
+            decisions_mode: :unified,
+            api_key: "sk-1",
+            base_url: "http://localhost:4000",
+            transport: Driver,
+            transport_opts: [stub_pid: pid],
+            retry: false
+          ]
+        )
+
+      prep = GeminiUnifiedContract.prepared(:is_spam)
+
+      for bad_state <- [%{pid: self()}, %{tuple: {1, 2}}, %{bin: <<255, 255>>}, <<255, 255>>] do
+        assert {:error, %SystemOneSDK.Error{type: :invalid_request}} =
+                 GeminiDecisions.system_one_prepared(client.provider_client, bad_state, prep, [])
+      end
+
+      for bad_map <- [%{pid: self()}, %{tuple: {1, 2}}, %{bin: <<255, 255>>}] do
+        assert {:error, _reason} =
+                 GeminiUnifiedContract.evaluate(:is_spam, bad_map, client: client, cache?: false)
+
+        assert [{:error, _reason}] =
+                 GeminiUnifiedContract.evaluate_many(:is_spam, [bad_map],
+                   client: client,
+                   cache?: false
+                 )
+      end
+
+      # Unencodable exception inside eval_fn is wrapped as %JevDSL.Error{}
+      assert {:error, %JevDSL.Error{type: :evaluation_failed}} =
+               GeminiUnifiedContract.evaluate(:is_spam, %{body: "x"},
+                 eval_fn: fn _ -> Jason.encode!(%{pid: self()}) end
+               )
     end
   end
 end

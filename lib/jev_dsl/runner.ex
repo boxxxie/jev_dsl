@@ -15,7 +15,7 @@ defmodule JevDSL.Runner do
   """
 
   alias JevDSL.{Cache, Error}
-  alias JevDSL.Providers.GeminiDecisions
+  alias SystemOneSDK.Providers.GeminiDecisions
 
   @client_sdk_options [
     :base_url,
@@ -60,7 +60,7 @@ defmodule JevDSL.Runner do
   """
   @spec cache_key(module(), atom() | String.t(), term(), keyword()) :: String.t()
   def cache_key(contract_mod, contract_key, state, opts \\ []) do
-    merged = merge_module_opts(contract_mod, opts)
+    merged = merge_module_opts!(contract_mod, opts)
     Cache.key(state, contract_mod.prepared(contract_key), merged)
   end
 
@@ -71,17 +71,23 @@ defmodule JevDSL.Runner do
   """
   @spec available?(module(), keyword(), atom()) :: boolean()
   def available?(contract_mod, opts \\ [], eval_fn_key \\ :eval_fn) do
-    merged = merge_module_opts(contract_mod, opts)
-
-    cond do
-      is_function(Keyword.get(merged, eval_fn_key), 1) -> true
-      is_function(Keyword.get(merged, :eval_fn), 1) -> true
-      is_function(Keyword.get(merged, :jev_eval_fn), 1) -> true
-      has_client?(merged) -> true
-      can_build_provider_client?(merged) -> true
-      Keyword.get(merged, :use_tier2_cache, true) and has_tier2_cache?(merged) -> true
-      true -> false
+    case merge_module_opts(contract_mod, opts) do
+      {:ok, merged} -> merged_available?(merged, eval_fn_key)
+      {:error, _} -> false
     end
+  end
+
+  defp merged_available?(merged, eval_fn_key) do
+    has_eval_fn?(merged, eval_fn_key) or
+      has_client?(merged) or
+      can_build_provider_client?(merged) or
+      (Keyword.get(merged, :use_tier2_cache, true) and has_tier2_cache?(merged))
+  end
+
+  defp has_eval_fn?(merged, eval_fn_key) do
+    Enum.any?([eval_fn_key, :eval_fn, :jev_eval_fn], fn key ->
+      is_function(Keyword.get(merged, key), 1)
+    end)
   end
 
   @doc """
@@ -128,25 +134,44 @@ defmodule JevDSL.Runner do
 
   defp do_evaluate(contract_mod, contract_key, state, opts) do
     if valid_contract?(contract_mod, contract_key) do
-      merged = merge_module_opts(contract_mod, opts)
-      eval_fn = resolve_eval_fn(merged)
+      case merge_module_opts(contract_mod, opts) do
+        {:ok, merged} ->
+          run_single_evaluate(contract_mod, contract_key, state, merged)
 
-      cond do
-        is_function(eval_fn, 1) ->
-          eval_state = Keyword.get(merged, :eval_fn_state, state)
-          eval_fn.(eval_state)
-
-        can_run_or_tier2?(merged) ->
-          dispatch_single(contract_mod, contract_key, state, merged)
-
-        true ->
-          {:error, :no_api_key}
+        {:error, _} = err ->
+          err
       end
     else
       {:error, {:unknown_contract, contract_key}}
     end
   rescue
-    err -> {:error, err}
+    err in [Error, SystemOneSDK.Error] ->
+      {:error, err}
+
+    err ->
+      {:error,
+       %Error{
+         type: :evaluation_failed,
+         contract: contract_key,
+         message: Exception.message(err),
+         details: err
+       }}
+  end
+
+  defp run_single_evaluate(contract_mod, contract_key, state, merged) do
+    eval_fn = resolve_eval_fn(merged)
+
+    cond do
+      is_function(eval_fn, 1) ->
+        eval_state = Keyword.get(merged, :eval_fn_state, state)
+        eval_fn.(eval_state)
+
+      can_run_or_tier2?(merged) ->
+        dispatch_single(contract_mod, contract_key, state, merged)
+
+      true ->
+        {:error, :no_api_key}
+    end
   end
 
   @doc """
@@ -169,14 +194,29 @@ defmodule JevDSL.Runner do
   end
 
   defp do_evaluate_many(contract_mod, contract_key, states, opts) do
-    if valid_contract?(contract_mod, contract_key) do
-      merged = merge_module_opts(contract_mod, opts)
+    with true <- valid_contract?(contract_mod, contract_key),
+         {:ok, merged} <- merge_module_opts(contract_mod, opts) do
       run_evaluate_many(contract_mod, contract_key, states, merged)
     else
-      Enum.map(states, fn _ -> {:error, {:unknown_contract, contract_key}} end)
+      false ->
+        Enum.map(states, fn _ -> {:error, {:unknown_contract, contract_key}} end)
+
+      {:error, _} = err ->
+        Enum.map(states, fn _ -> err end)
     end
   rescue
-    err -> Enum.map(states, fn _ -> {:error, err} end)
+    err in [Error, SystemOneSDK.Error] ->
+      Enum.map(states, fn _ -> {:error, err} end)
+
+    err ->
+      wrapped = %Error{
+        type: :evaluation_failed,
+        contract: contract_key,
+        message: Exception.message(err),
+        details: err
+      }
+
+      Enum.map(states, fn _ -> {:error, wrapped} end)
   end
 
   defp run_evaluate_many(contract_mod, contract_key, states, merged) do
@@ -203,8 +243,17 @@ defmodule JevDSL.Runner do
 
     raw =
       case Keyword.get(opts, :backend, :system_one) do
-        :gemini_decisions -> gemini_api_key(opts, otp_app)
-        _ -> system_one_api_key(opts, otp_app)
+        :gemini_decisions ->
+          gemini_api_key(opts, otp_app)
+
+        backend when backend in [:system_one, nil] ->
+          system_one_api_key(opts, otp_app)
+
+        other ->
+          raise Error.invalid_options(
+                  "Invalid :backend #{inspect(other)}. Expected :system_one or :gemini_decisions.",
+                  %{backend: other}
+                )
       end
 
     resolve_secret(raw) || ""
@@ -219,7 +268,7 @@ defmodule JevDSL.Runner do
   end
 
   def resolve_secret({:system, env_var, default}) when is_binary(env_var) do
-    resolve_secret(System.get_env(env_var) || default)
+    non_blank_secret(System.get_env(env_var)) || resolve_secret(default)
   end
 
   def resolve_secret(fun) when is_function(fun, 0), do: resolve_secret(fun.())
@@ -237,18 +286,29 @@ defmodule JevDSL.Runner do
   end
 
   defp gemini_api_key(opts, otp_app) do
-    decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
+    decisions_mode =
+      case Keyword.get(opts, :decisions_mode) do
+        nil ->
+          :unified
+
+        mode when mode in [:unified, :native] ->
+          mode
+
+        other ->
+          raise Error.invalid_options(
+                  "Invalid :decisions_mode #{inspect(other)}. Expected :unified or :native.",
+                  %{decisions_mode: other}
+                )
+      end
 
     base_url =
-      GeminiDecisions.resolve_base_url(
+      resolve_gemini_base_url(
         Keyword.put_new(opts, :otp_app, otp_app),
         decisions_mode
       )
 
     env_fallbacks =
-      if decisions_mode == :native and
-           (is_nil(base_url) or
-              String.contains?(base_url, "generativelanguage.googleapis.com")) do
+      if decisions_mode == :native and (is_nil(base_url) or google_decisions_host?(base_url)) do
         [
           fn -> System.get_env("GEMINI_API_KEY") end,
           fn -> System.get_env("LITELLM_API_KEY") end,
@@ -272,6 +332,16 @@ defmodule JevDSL.Runner do
         fn -> Application.get_env(:jev_dsl, :api_key) end
       ] ++ env_fallbacks
     )
+  end
+
+  defp google_decisions_host?(base_url) do
+    case URI.parse(to_string(base_url)).host do
+      host when is_binary(host) ->
+        String.downcase(host) == "generativelanguage.googleapis.com"
+
+      _ ->
+        false
+    end
   end
 
   defp system_one_api_key(opts, otp_app) do
@@ -316,7 +386,7 @@ defmodule JevDSL.Runner do
   defp explicit_blank_opt?(opts, keys) do
     Enum.any?(keys, fn key ->
       case Keyword.fetch(opts, key) do
-        {:ok, val} when val in [nil, false] -> true
+        {:ok, false} -> true
         {:ok, bin} when is_binary(bin) -> String.trim(bin) == ""
         _ -> false
       end
@@ -353,6 +423,13 @@ defmodule JevDSL.Runner do
       Keyword.get(opts, :jev_eval_fn)
   end
 
+  defp merge_module_opts!(contract_mod, opts) do
+    case merge_module_opts(contract_mod, opts) do
+      {:ok, merged} -> merged
+      {:error, %Error{} = err} -> raise err
+    end
+  end
+
   defp merge_module_opts(contract_mod, opts) do
     Code.ensure_loaded(contract_mod)
 
@@ -371,19 +448,47 @@ defmodule JevDSL.Runner do
         _ -> []
       end
 
-    base_opts
-    |> Keyword.merge(app_mod_opts)
-    |> Keyword.merge(opts)
-    |> sync_client_opts(opts)
+    module_opts = Keyword.merge(base_opts, app_mod_opts)
+    raw_merged = Keyword.merge(module_opts, opts)
+
+    with :ok <- validate_runtime_opts(raw_merged) do
+      {:ok, sync_client_opts(raw_merged, module_opts, opts)}
+    end
   end
 
-  defp sync_client_opts(merged, opts) do
+  defp validate_runtime_opts(opts) do
+    with :ok <- validate_backend_opt(opts) do
+      case GeminiDecisions.validate_provider_opts(opts) do
+        :ok ->
+          :ok
+
+        {:error, %SystemOneSDK.Error{message: msg, details: details}} ->
+          {:error, Error.invalid_options(msg, details)}
+      end
+    end
+  end
+
+  defp validate_backend_opt(opts) do
+    case Keyword.get(opts, :backend) do
+      val when val in [nil, :system_one, :gemini_decisions] ->
+        :ok
+
+      other ->
+        {:error,
+         Error.invalid_options(
+           "Invalid :backend #{inspect(other)}. Expected :system_one or :gemini_decisions.",
+           %{backend: other}
+         )}
+    end
+  end
+
+  defp sync_client_opts(merged, module_opts, opts) do
     case Keyword.get(merged, :client) do
       %SystemOneSDK.Client{
         provider: GeminiDecisions,
         provider_client: %GeminiDecisions.Client{} = pclient
       } = client ->
-        sync_gemini_client_opts(merged, opts, client, pclient)
+        sync_gemini_client_opts(merged, module_opts, opts, client, pclient)
 
       %SystemOneSDK.Client{} ->
         Keyword.put(merged, :backend, :system_one)
@@ -395,6 +500,7 @@ defmodule JevDSL.Runner do
 
   defp sync_gemini_client_opts(
          merged,
+         module_opts,
          opts,
          %SystemOneSDK.Client{} = client,
          %GeminiDecisions.Client{} = pclient
@@ -402,7 +508,12 @@ defmodule JevDSL.Runner do
     call_opts =
       opts
       |> Keyword.put_new(:otp_app, Keyword.get(merged, :otp_app))
-      |> maybe_put_client_model(client, pclient)
+      |> maybe_inherit_module_opt(:decisions_mode, module_opts, pclient, :decisions_mode)
+      |> maybe_inherit_module_opt(:auth_mode, module_opts, pclient, :auth_mode)
+      |> maybe_inherit_module_opt(:decisions_path, module_opts, pclient, :decisions_path)
+      |> maybe_inherit_module_opt(:base_url, module_opts, pclient, :base_url)
+      |> maybe_inherit_module_model(module_opts, client, pclient)
+      |> maybe_inherit_module_api_key(module_opts, client, pclient)
 
     updated_pclient = GeminiDecisions.apply_call_opts(pclient, call_opts)
 
@@ -417,23 +528,88 @@ defmodule JevDSL.Runner do
     }
 
     merged
+    |> Keyword.drop([:gemini_api_key, :api_key, :decisions_path, :base_url])
     |> Keyword.put(:backend, :gemini_decisions)
     |> Keyword.put(:decisions_mode, updated_pclient.decisions_mode)
     |> Keyword.put(:auth_mode, updated_pclient.auth_mode)
     |> Keyword.put(:model, updated_pclient.default_model)
+    |> maybe_put_kw(:decisions_path, updated_pclient.decisions_path)
+    |> maybe_put_kw(:base_url, updated_pclient.base_url)
+    |> maybe_put_kw(:api_key, updated_pclient.api_key)
     |> Keyword.put(:client, updated_client)
   end
 
-  defp maybe_put_client_model(call_opts, %SystemOneSDK.Client{} = client, pclient) do
-    if Keyword.has_key?(call_opts, :model) do
-      call_opts
-    else
-      case client.default_model || pclient.default_model do
-        nil -> call_opts
-        model -> Keyword.put(call_opts, :model, model)
-      end
+  defp maybe_inherit_module_opt(call_opts, opt_key, module_opts, pclient, client_field) do
+    cond do
+      Keyword.get(call_opts, opt_key) != nil ->
+        call_opts
+
+      GeminiDecisions.explicit_field?(pclient, client_field) ->
+        call_opts
+
+      (mod_val = Keyword.get(module_opts, opt_key)) != nil ->
+        Keyword.put(call_opts, opt_key, mod_val)
+
+      true ->
+        call_opts
     end
   end
+
+  defp maybe_inherit_module_model(
+         call_opts,
+         module_opts,
+         %SystemOneSDK.Client{} = client,
+         pclient
+       ) do
+    cond do
+      Keyword.get(call_opts, :model) != nil ->
+        call_opts
+
+      GeminiDecisions.explicit_field?(pclient, :default_model) ->
+        maybe_put_kw(call_opts, :model, client.default_model || pclient.default_model)
+
+      (mod_model = Keyword.get(module_opts, :model)) != nil ->
+        Keyword.put(call_opts, :model, mod_model)
+
+      true ->
+        maybe_put_kw(call_opts, :model, client.default_model || pclient.default_model)
+    end
+  end
+
+  defp maybe_inherit_module_api_key(
+         call_opts,
+         module_opts,
+         %SystemOneSDK.Client{} = client,
+         pclient
+       ) do
+    call_has_key? =
+      Enum.any?(
+        [:api_key, :gemini_api_key],
+        &(non_blank_secret(Keyword.get(call_opts, &1)) != nil)
+      ) or
+        explicit_blank_opt?(call_opts, [:api_key, :gemini_api_key])
+
+    client_has_key? =
+      GeminiDecisions.explicit_field?(pclient, :api_key) or
+        non_blank_secret(client.api_key) != nil
+
+    cond do
+      call_has_key? or client_has_key? ->
+        call_opts
+
+      (mod_gemini = Keyword.get(module_opts, :gemini_api_key)) != nil ->
+        Keyword.put(call_opts, :gemini_api_key, mod_gemini)
+
+      (mod_api = Keyword.get(module_opts, :api_key)) != nil ->
+        Keyword.put(call_opts, :api_key, mod_api)
+
+      true ->
+        call_opts
+    end
+  end
+
+  defp maybe_put_kw(opts, _key, nil), do: opts
+  defp maybe_put_kw(opts, key, val), do: Keyword.put(opts, key, val)
 
   defp can_run_or_tier2?(opts) do
     use_tier2? = Keyword.get(opts, :use_tier2_cache, true)
@@ -455,11 +631,14 @@ defmodule JevDSL.Runner do
     case Keyword.get(opts, :backend, :system_one) do
       :gemini_decisions ->
         decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
-        base_url = GeminiDecisions.resolve_base_url(opts, decisions_mode)
+        base_url = resolve_gemini_base_url(opts, decisions_mode)
         is_binary(base_url) and String.trim(base_url) != ""
 
-      _ ->
+      backend when backend in [:system_one, nil] ->
         true
+
+      _ ->
+        false
     end
   end
 
@@ -502,45 +681,90 @@ defmodule JevDSL.Runner do
   end
 
   defp build_provider_client(opts) do
-    case Keyword.get(opts, :backend, :system_one) do
-      :gemini_decisions ->
-        decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
-        base_url = GeminiDecisions.resolve_base_url(opts, decisions_mode)
-
-        if is_binary(base_url) and String.trim(base_url) != "" do
-          provider_opts =
-            opts
-            |> Keyword.take(
-              @client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path, :otp_app]
-            )
-            |> Keyword.put(:base_url, base_url)
-            |> Keyword.put(:api_key, api_key(opts))
-
-          {:ok,
-           SystemOneSDK.new_client(
-             provider: GeminiDecisions,
-             provider_opts: provider_opts
-           )}
-        else
-          {:error,
-           %Error{
-             type: :invalid_request,
-             message:
-               "Missing :base_url for :gemini_decisions in #{inspect(decisions_mode)} mode. " <>
-                 "Pass :base_url, configure :litellm_base_url/:base_url, or set LITELLM_BASE_URL.",
-             details: %{decisions_mode: decisions_mode}
-           }}
-        end
-
-      _ ->
-        client_opts =
-          opts
-          |> Keyword.take(@client_sdk_options)
-          |> Keyword.put(:api_key, api_key(opts))
-
-        {:ok, SystemOneSDK.new_client(client_opts)}
+    with :ok <- validate_runtime_opts(opts) do
+      case Keyword.get(opts, :backend, :system_one) do
+        :gemini_decisions -> build_gemini_provider_client(opts)
+        backend when backend in [:system_one, nil] -> build_system_one_provider_client(opts)
+      end
     end
   end
+
+  defp build_gemini_provider_client(opts) do
+    decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
+    base_url = resolve_gemini_base_url(opts, decisions_mode)
+
+    if is_binary(base_url) and String.trim(base_url) != "" do
+      provider_opts =
+        opts
+        |> Keyword.take(
+          @client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path, :otp_app]
+        )
+        |> Keyword.put(:base_url, base_url)
+        |> Keyword.put(:api_key, api_key(opts))
+
+      {:ok,
+       SystemOneSDK.new_client(
+         provider: GeminiDecisions,
+         provider_opts: provider_opts
+       )}
+    else
+      {:error,
+       %Error{
+         type: :invalid_request,
+         message:
+           "Missing :base_url for :gemini_decisions in #{inspect(decisions_mode)} mode. " <>
+             "Pass :base_url, configure :litellm_base_url/:base_url, or set LITELLM_BASE_URL.",
+         details: %{decisions_mode: decisions_mode}
+       }}
+    end
+  end
+
+  defp build_system_one_provider_client(opts) do
+    client_opts =
+      opts
+      |> Keyword.take(@client_sdk_options)
+      |> Keyword.put(:api_key, api_key(opts))
+
+    {:ok, SystemOneSDK.new_client(client_opts)}
+  end
+
+  defp resolve_gemini_base_url(opts, decisions_mode) do
+    explicit = resolve_secret(Keyword.get(opts, :base_url))
+
+    if is_binary(explicit) and String.trim(explicit) != "" do
+      explicit
+    else
+      otp_app_base_url(Keyword.get(opts, :otp_app), decisions_mode) ||
+        jev_app_base_url(decisions_mode) ||
+        GeminiDecisions.resolve_base_url(opts, decisions_mode)
+    end
+  end
+
+  defp otp_app_base_url(nil, _mode), do: nil
+
+  defp otp_app_base_url(otp_app, :native) do
+    non_blank_secret(Application.get_env(otp_app, :gemini_decisions_base_url)) ||
+      non_blank_secret(Application.get_env(otp_app, :base_url))
+  end
+
+  defp otp_app_base_url(otp_app, :unified) do
+    non_blank_secret(Application.get_env(otp_app, :litellm_base_url)) ||
+      non_blank_secret(Application.get_env(otp_app, :base_url))
+  end
+
+  defp otp_app_base_url(_otp_app, _mode), do: nil
+
+  defp jev_app_base_url(:native) do
+    non_blank_secret(Application.get_env(:jev_dsl, :gemini_decisions_base_url)) ||
+      non_blank_secret(Application.get_env(:jev_dsl, :base_url))
+  end
+
+  defp jev_app_base_url(:unified) do
+    non_blank_secret(Application.get_env(:jev_dsl, :litellm_base_url)) ||
+      non_blank_secret(Application.get_env(:jev_dsl, :base_url))
+  end
+
+  defp jev_app_base_url(_), do: nil
 
   defp dispatch_single(contract_mod, contract_key, state, opts) do
     prep = contract_mod.prepared(contract_key)

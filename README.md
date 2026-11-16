@@ -173,10 +173,10 @@ children = [
 
 ### Gemini Decisions API (`gemini-decision-1`)
 
-`JevDSL` supports Google's **Gemini Decisions API** (`gemini-decision-1`) via `backend: :gemini_decisions` (`JevDSL.Providers.GeminiDecisions`) in two wire modes:
+`JevDSL` supports Google's **Gemini Decisions API** (`gemini-decision-1`) via `backend: :gemini_decisions` (`SystemOneSDK.Providers.GeminiDecisions`) in two wire modes:
 
 * **Unified LiteLLM (`decisions_mode: :unified`, default)** — sends `/v1/decisions` requests with `Authorization: Bearer <token>`. Requires an explicit `:base_url`, `otp_app` `:litellm_base_url`/`:base_url`, or `LITELLM_BASE_URL`.
-* **Native Gemini (`decisions_mode: :native`)** — sends `/v1beta/decisions` (against `generativelanguage.googleapis.com`, the default native host) or `/gemini/v1beta/decisions` (against custom LiteLLM passthrough proxies) with `x-goog-api-key`.
+* **Native Gemini (`decisions_mode: :native`)** — sends `/v1beta/decisions` (against `generativelanguage.googleapis.com`, the default native host, or proxies/gateways; pass `decisions_path: "/gemini/v1beta/decisions"` or a `/gemini` base URL for LiteLLM passthrough) with `x-goog-api-key`.
 * **Keyless & Proxy Auth (`auth_mode: :none`)** — omits `Authorization` and `x-goog-api-key` headers for local proxies or mTLS/custom-header gateways (`extra_headers` / `headers`).
 
 ```elixir
@@ -212,7 +212,7 @@ end
 
 Key & endpoint resolution details:
 * **API keys:** Resolved from `:gemini_api_key` / `:api_key` (supporting strings, `{:system, "ENV"}`, 0-arity functions, or `{mod, fun, args}`), `otp_app` / `:jev_dsl` app config, and environment variables. In `:native` mode targeting Google, `GEMINI_API_KEY` takes precedence over `LITELLM_API_KEY` / `LITELLM_MASTER_KEY`; in `:unified` or proxy modes, `LITELLM_*` takes precedence.
-* **Per-call overrides & pre-built clients:** Pass `backend:`, `decisions_mode:`, `auth_mode:`, `decisions_path:`, `base_url:`, `model:`, `extra_body:`, or `extra_headers:` per `evaluate/3` or `evaluate_many/3` call—even when reusing a pre-built `SystemOneSDK.new_client(provider: JevDSL.Providers.GeminiDecisions, ...)` client. Cache keys automatically isolate across backend, mode, and model.
+* **Per-call overrides & pre-built clients:** Pass `backend:`, `decisions_mode:`, `auth_mode:`, `decisions_path:`, `base_url:`, `model:`, `extra_body:`, or `extra_headers:` per `evaluate/3` or `evaluate_many/3` call—even when reusing a pre-built `SystemOneSDK.new_client(provider: SystemOneSDK.Providers.GeminiDecisions, ...)` client. Cache keys automatically isolate across backend, mode, and model.
 
 ---
 

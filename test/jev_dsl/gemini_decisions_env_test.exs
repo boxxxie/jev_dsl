@@ -148,13 +148,40 @@ defmodule JevDSL.GeminiDecisionsEnvTest do
     Application.put_env(:jev_dsl, :litellm_base_url, "http://localhost:4001")
     assert OtherOtpAppContract.available?()
 
-    # Explicit blank key (nil, "", false) overrides env/app-env fallback
-    assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: nil) == ""
+    # nil falls through to app config / env fallback, while "" and false explicitly override fallback
+    assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: nil) ==
+             "sk-jev-app-env"
+
     assert JevDSL.Runner.api_key(backend: :gemini_decisions, api_key: "") == ""
     assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: false) == ""
 
-    # Unset {:system, ...} and false/atom callbacks do not turn into non-empty keys when env is unset
+    # Empty env var in {:system, env_var, default} falls back to default
+    empty_env_var = "JEV_DSL_EMPTY_SECRET_#{System.unique_integer([:positive])}"
+    System.put_env(empty_env_var, "   ")
+    on_exit(fn -> System.delete_env(empty_env_var) end)
+    assert JevDSL.Runner.resolve_secret({:system, empty_env_var, "default-sk"}) == "default-sk"
+
+    # Unset app config + env makes api_key: nil unavailable without auth_mode: :none
     Application.delete_env(:jev_dsl, :gemini_api_key)
+    assert JevDSL.Runner.api_key(backend: :gemini_decisions, gemini_api_key: nil) == ""
+
+    refute OtherOtpAppContract.available?(
+             base_url: "http://localhost:4000",
+             api_key: nil
+           )
+
+    # :system_one api_key: nil / typesafe_api_key: nil falls through to TYPESAFE_API_KEY
+    prev_typesafe = System.get_env("TYPESAFE_API_KEY")
+    System.put_env("TYPESAFE_API_KEY", "ts-env-fallback")
+
+    on_exit(fn ->
+      if prev_typesafe,
+        do: System.put_env("TYPESAFE_API_KEY", prev_typesafe),
+        else: System.delete_env("TYPESAFE_API_KEY")
+    end)
+
+    assert JevDSL.Runner.api_key(backend: :system_one, api_key: nil) == "ts-env-fallback"
+    assert JevDSL.Runner.api_key(backend: :system_one, typesafe_api_key: nil) == "ts-env-fallback"
 
     assert JevDSL.Runner.api_key(
              backend: :gemini_decisions,

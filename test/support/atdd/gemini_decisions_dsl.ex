@@ -197,7 +197,10 @@ defmodule JevDSL.ATDD.GeminiDecisionsDSL do
     quote line: __CALLER__.line do
       ctx = unquote(ctx_ast)
       expected = unquote(expected_type)
-      assert {:error, %JevDSL.Error{type: ^expected}} = ctx.last_result
+
+      assert {:error, err} = ctx.last_result
+      assert err.__struct__ in [JevDSL.Error, SystemOneSDK.Error]
+      assert err.type == expected
       ctx
     end
   end

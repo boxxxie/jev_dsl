@@ -42,7 +42,7 @@ defmodule JevDSL.Cache do
       end
   """
 
-  alias JevDSL.Providers.GeminiDecisions
+  alias SystemOneSDK.Providers.GeminiDecisions
 
   @type cache_key :: String.t()
   @type batch_entry :: {cache_key(), atom() | String.t(), map(), term()}
@@ -88,7 +88,7 @@ defmodule JevDSL.Cache do
     fp = extract_fingerprint(prepared, opts)
 
     case Keyword.get(opts, :client) do
-      %SystemOneSDK.Client{provider: JevDSL.Providers.GeminiDecisions, provider_client: pclient} =
+      %SystemOneSDK.Client{provider: GeminiDecisions, provider_client: pclient} =
           client ->
         gemini_client_identity(state, fp, client, pclient, opts)
 
@@ -116,20 +116,41 @@ defmodule JevDSL.Cache do
   defp backend_identity(state, fp, opts) do
     case Keyword.get(opts, :backend, :system_one) do
       :gemini_decisions ->
+        decisions_mode =
+          case Keyword.get(opts, :decisions_mode) do
+            nil ->
+              :unified
+
+            mode when mode in [:unified, :native] ->
+              mode
+
+            other ->
+              raise JevDSL.Error.invalid_options(
+                      "Invalid :decisions_mode #{inspect(other)}. Expected :unified or :native.",
+                      %{decisions_mode: other}
+                    )
+          end
+
         %{
           service: :gemini_decisions,
-          decisions_mode: Keyword.get(opts, :decisions_mode) || :unified,
+          decisions_mode: decisions_mode,
           model: Keyword.get(opts, :model) || "gemini-decision-1",
           state: state,
           fingerprint: fp
         }
 
-      _ ->
+      backend when backend in [:system_one, nil] ->
         %{
           service: :system_one,
           state: state,
           fingerprint: fp
         }
+
+      other ->
+        raise JevDSL.Error.invalid_options(
+                "Invalid :backend #{inspect(other)}. Expected :system_one or :gemini_decisions.",
+                %{backend: other}
+              )
     end
   end
 
@@ -248,6 +269,11 @@ defmodule JevDSL.Cache do
   defp answer_confident?(%SystemOneSDK.ChoiceAnswer{probabilities: probs}, min_conf)
        when is_map(probs) and map_size(probs) > 0 do
     Enum.max(Map.values(probs)) >= min_conf
+  end
+
+  defp answer_confident?(%SystemOneSDK.ChoiceAnswer{confidence: conf}, min_conf)
+       when is_number(conf) do
+    conf >= min_conf
   end
 
   defp answer_confident?(%SystemOneSDK.NoulAnswer{noul: noul}, min_conf)
