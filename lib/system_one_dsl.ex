@@ -73,7 +73,7 @@ defmodule SystemOneDSL do
         )
   """
 
-  alias SystemOneDSL.{Cache, Contract, CUE, Question, Runner}
+  alias SystemOneDSL.{Contract, CUE, Question, Runner}
   alias SystemOneSDK.Question, as: SDKQuestion
 
   @use_schema NimbleOptions.new!(
@@ -141,8 +141,8 @@ defmodule SystemOneDSL do
                     "Wire format for `:gemini_decisions` (`:unified` for `/v1/decisions`, `:native` for `/v1beta/decisions`)."
                 ],
                 auth_mode: [
-                  type: {:in, [:bearer, :x_goog_api_key]},
-                  doc: "Authentication header mode (`:bearer` or `:x_goog_api_key`)."
+                  type: {:in, [:bearer, :x_goog_api_key, :none]},
+                  doc: "Authentication header mode (`:bearer`, `:x_goog_api_key`, or `:none`)."
                 ],
                 decisions_path: [
                   type: :string,
@@ -358,12 +358,40 @@ defmodule SystemOneDSL do
         "Expected an atom or string for contract/question name, got: #{Macro.to_string(other)}"
   end
 
-  defp compile_subquestion_ast({:choice, meta, [q_name, [do: q_block]]}, caller) do
-    compile_subquestion_ast({:choice, meta, [q_name, [], [do: q_block]]}, caller)
+  defp compile_subquestion_ast({:choice, _, [q_name, opts_or_block]}, caller) do
+    compile_choice_subquestion(q_name, opts_or_block, nil, caller)
   end
 
-  defp compile_subquestion_ast({:choice, _, [q_name, opts, [do: q_block]]}, caller)
-       when is_list(opts) do
+  defp compile_subquestion_ast({:choice, _, [q_name, opts, maybe_block]}, caller) do
+    compile_choice_subquestion(q_name, opts, maybe_block, caller)
+  end
+
+  defp compile_subquestion_ast({:score, _, [q_name, opts_or_block]}, caller) do
+    compile_score_subquestion(q_name, opts_or_block, nil, caller)
+  end
+
+  defp compile_subquestion_ast({:score, _, [q_name, opts, maybe_block]}, caller) do
+    compile_score_subquestion(q_name, opts, maybe_block, caller)
+  end
+
+  defp compile_subquestion_ast({:noul, _, [q_name, opts_or_block]}, caller) do
+    compile_noul_subquestion(q_name, opts_or_block, nil, caller)
+  end
+
+  defp compile_subquestion_ast({:noul, _, [q_name, opts, maybe_block]}, caller) do
+    compile_noul_subquestion(q_name, opts, maybe_block, caller)
+  end
+
+  defp compile_subquestion_ast(other_ast, caller) do
+    raise CompileError,
+      file: caller.file,
+      line: caller.line,
+      description:
+        "Unsupported expression inside defcontract/defjev block. Expected `choice`, `noul`, or `score`, got: #{Macro.to_string(other_ast)}"
+  end
+
+  defp compile_choice_subquestion(q_name, opts_or_block, maybe_block, caller) do
+    {opts, q_block} = normalize_macro_args(opts_or_block, maybe_block, caller)
     q_atom = normalize_key_atom!(Keyword.get(opts, :as, q_name), caller)
     {parsed_inst, criteria_pairs} = parse_clause_block(q_block, opts[:ask], caller)
 
@@ -377,12 +405,8 @@ defmodule SystemOneDSL do
     end
   end
 
-  defp compile_subquestion_ast({:score, meta, [q_name, [do: q_block]]}, caller) do
-    compile_subquestion_ast({:score, meta, [q_name, [], [do: q_block]]}, caller)
-  end
-
-  defp compile_subquestion_ast({:score, _, [q_name, opts, [do: q_block]]}, caller)
-       when is_list(opts) do
+  defp compile_score_subquestion(q_name, opts_or_block, maybe_block, caller) do
+    {opts, q_block} = normalize_macro_args(opts_or_block, maybe_block, caller)
     q_atom = normalize_key_atom!(Keyword.get(opts, :as, q_name), caller)
     {parsed_inst, level_pairs} = parse_clause_block(q_block, opts[:ask], caller)
 
@@ -396,22 +420,8 @@ defmodule SystemOneDSL do
     end
   end
 
-  defp compile_subquestion_ast({:noul, _, [q_name, [do: noul_block]]}, caller) do
-    q_atom = normalize_key_atom!(q_name, caller)
-    {prompt, criteria} = parse_noul_definition([], noul_block, caller)
-
-    quote do
-      %Question{
-        name: unquote(q_atom),
-        type: :noul,
-        instructions: unquote(prompt),
-        criteria: unquote(Macro.escape(criteria))
-      }
-    end
-  end
-
-  defp compile_subquestion_ast({:noul, _, [q_name, opts, [do: noul_block]]}, caller)
-       when is_list(opts) do
+  defp compile_noul_subquestion(q_name, opts_or_block, maybe_block, caller) do
+    {opts, noul_block} = normalize_macro_args(opts_or_block, maybe_block, caller)
     q_atom = normalize_key_atom!(Keyword.get(opts, :as, q_name), caller)
     {prompt, criteria} = parse_noul_definition(opts, noul_block, caller)
 
@@ -423,28 +433,6 @@ defmodule SystemOneDSL do
         criteria: unquote(Macro.escape(criteria))
       }
     end
-  end
-
-  defp compile_subquestion_ast({:noul, _, [q_name, opts]}, caller) when is_list(opts) do
-    q_atom = normalize_key_atom!(Keyword.get(opts, :as, q_name), caller)
-    {prompt, criteria} = parse_noul_definition(opts, nil, caller)
-
-    quote do
-      %Question{
-        name: unquote(q_atom),
-        type: :noul,
-        instructions: unquote(prompt),
-        criteria: unquote(Macro.escape(criteria))
-      }
-    end
-  end
-
-  defp compile_subquestion_ast(other_ast, caller) do
-    raise CompileError,
-      file: caller.file,
-      line: caller.line,
-      description:
-        "Unsupported expression inside defcontract/defjev block. Expected `choice`, `noul`, or `score`, got: #{Macro.to_string(other_ast)}"
   end
 
   defp parse_noul_definition(opts, do_block, caller) do
@@ -621,7 +609,7 @@ defmodule SystemOneDSL do
   @spec fetch_answer(SystemOneSDK.SystemOneResponse.t() | map(), atom() | String.t()) ::
           {:ok, term()} | :error
   def fetch_answer(%{answers: answers}, key)
-      when is_map(answers) and (is_atom(key) or is_binary(key)) do
+      when is_map(answers) and ((is_atom(key) and not is_nil(key)) or is_binary(key)) do
     fetch_dual_key(answers, key)
   end
 
@@ -631,12 +619,18 @@ defmodule SystemOneDSL do
   Fetches an answer by atom or string `key`, raising `KeyError` if not present.
   """
   @spec fetch_answer!(SystemOneSDK.SystemOneResponse.t() | map(), atom() | String.t()) :: term()
-  def fetch_answer!(%{answers: answers} = response, key) do
+  def fetch_answer!(response, key) do
     case fetch_answer(response, key) do
       {:ok, answer} ->
         answer
 
       :error ->
+        answers =
+          case response do
+            %{answers: map} when is_map(map) -> map
+            _ -> %{}
+          end
+
         raise KeyError,
           key: key,
           term: answers,
@@ -662,12 +656,14 @@ defmodule SystemOneDSL do
   @spec choice?(SystemOneSDK.ChoiceAnswer.t() | map() | atom() | String.t(), atom() | String.t()) ::
           boolean()
   def choice?(%{choice: choice}, expected)
-      when (is_atom(choice) or is_binary(choice)) and (is_atom(expected) or is_binary(expected)) do
+      when ((is_atom(choice) and not is_nil(choice)) or is_binary(choice)) and
+             ((is_atom(expected) and not is_nil(expected)) or is_binary(expected)) do
     to_string(choice) == to_string(expected)
   end
 
   def choice?(choice, expected)
-      when (is_atom(choice) or is_binary(choice)) and (is_atom(expected) or is_binary(expected)) do
+      when ((is_atom(choice) and not is_nil(choice)) or is_binary(choice)) and
+             ((is_atom(expected) and not is_nil(expected)) or is_binary(expected)) do
     to_string(choice) == to_string(expected)
   end
 
@@ -687,12 +683,13 @@ defmodule SystemOneDSL do
   @spec probability(SystemOneSDK.ChoiceAnswer.t() | map(), atom() | String.t()) ::
           {:ok, number()} | :error
   def probability(%{probabilities: probs}, option_key)
-      when is_map(probs) and (is_atom(option_key) or is_binary(option_key)) do
+      when is_map(probs) and
+             ((is_atom(option_key) and not is_nil(option_key)) or is_binary(option_key)) do
     fetch_dual_key(probs, option_key)
   end
 
   def probability(%{} = probs, option_key)
-      when is_atom(option_key) or is_binary(option_key) do
+      when (is_atom(option_key) and not is_nil(option_key)) or is_binary(option_key) do
     fetch_dual_key(probs, option_key)
   end
 
@@ -706,7 +703,13 @@ defmodule SystemOneDSL do
   end
 
   defp find_by_string_key(map, target_str) do
-    case Enum.find(map, fn {k, _v} -> to_string(k) == target_str end) do
+    case Enum.find(map, fn
+           {k, _v} when (is_atom(k) and not is_nil(k)) or is_binary(k) ->
+             to_string(k) == target_str
+
+           _ ->
+             false
+         end) do
       {_k, v} -> {:ok, v}
       nil -> :error
     end
@@ -872,20 +875,50 @@ defmodule SystemOneDSL do
   end
 
   defp maybe_quote_cache_key(mod) do
-    unless Module.defines?(mod, {:cache_key, 2}) do
-      quote do
-        @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
-        @spec cache_key(atom() | String.t(), term()) :: String.t()
-        def cache_key(key, state),
-          do: Cache.key(state, prepared(key), __system_one_dsl_opts__())
+    has_2? = Module.defines?(mod, {:cache_key, 2})
+    has_3? = Module.defines?(mod, {:cache_key, 3})
 
-        defoverridable cache_key: 2
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
+          @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
+          def cache_key(key, state, opts \\ []),
+            do: Runner.cache_key(__MODULE__, key, state, opts)
+
+          defoverridable cache_key: 2, cache_key: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
+          @spec cache_key(atom() | String.t(), term()) :: String.t()
+          def cache_key(key, state), do: cache_key(key, state, [])
+
+          defoverridable cache_key: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string), `state`, and `opts`."
+          @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
+          def cache_key(key, state, opts),
+            do: Runner.cache_key(__MODULE__, key, state, opts)
+
+          defoverridable cache_key: 3
+        end
+
+      true ->
+        nil
     end
   end
 
   defp maybe_quote_available(mod) do
-    unless Module.defines?(mod, {:available?, 2}) do
+    has_0? = Module.defines?(mod, {:available?, 0})
+    has_1? = Module.defines?(mod, {:available?, 1})
+    has_2? = Module.defines?(mod, {:available?, 2})
+
+    if not has_0? and not has_1? and not has_2? do
       quote do
         @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
         @spec available?(keyword(), atom()) :: boolean()
@@ -895,47 +928,170 @@ defmodule SystemOneDSL do
 
         defoverridable available?: 0, available?: 1, available?: 2
       end
+    else
+      [
+        quote_available_arity(0, has_0?),
+        quote_available_arity(1, has_1?),
+        quote_available_arity(2, has_2?)
+      ]
+      |> Enum.reject(&is_nil/1)
+    end
+  end
+
+  defp quote_available_arity(_arity, true), do: nil
+
+  defp quote_available_arity(0, false) do
+    quote do
+      @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
+      @spec available?() :: boolean()
+      def available?, do: available?([])
+
+      defoverridable available?: 0
+    end
+  end
+
+  defp quote_available_arity(1, false) do
+    quote do
+      @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
+      @spec available?(keyword()) :: boolean()
+      def available?(opts), do: available?(opts, :eval_fn)
+
+      defoverridable available?: 1
+    end
+  end
+
+  defp quote_available_arity(2, false) do
+    quote do
+      @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
+      @spec available?(keyword(), atom()) :: boolean()
+      def available?(opts, eval_fn_key),
+        do: Runner.available?(__MODULE__, opts, eval_fn_key)
+
+      defoverridable available?: 2
     end
   end
 
   defp maybe_quote_evaluate(mod) do
-    unless Module.defines?(mod, {:evaluate, 3}) do
-      quote do
-        @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
-        @spec evaluate(atom() | String.t(), map(), keyword()) ::
-                {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
-        def evaluate(key, state, opts \\ []), do: Runner.evaluate(__MODULE__, key, state, opts)
+    has_2? = Module.defines?(mod, {:evaluate, 2})
+    has_3? = Module.defines?(mod, {:evaluate, 3})
 
-        defoverridable evaluate: 2, evaluate: 3
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
+          @spec evaluate(atom() | String.t(), map(), keyword()) ::
+                  {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
+          def evaluate(key, state, opts \\ []), do: Runner.evaluate(__MODULE__, key, state, opts)
+
+          defoverridable evaluate: 2, evaluate: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
+          @spec evaluate(atom() | String.t(), map()) ::
+                  {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
+          def evaluate(key, state), do: evaluate(key, state, [])
+
+          defoverridable evaluate: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
+          @spec evaluate(atom() | String.t(), map(), keyword()) ::
+                  {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
+          def evaluate(key, state, opts), do: Runner.evaluate(__MODULE__, key, state, opts)
+
+          defoverridable evaluate: 3
+        end
+
+      true ->
+        nil
     end
   end
 
   defp maybe_quote_evaluate_bang(mod) do
-    unless Module.defines?(mod, {:evaluate!, 3}) do
-      quote do
-        @doc "Evaluates `state` against `key` (atom or string) or raises `SystemOneDSL.Error` / `SystemOneSDK.Error`."
-        @spec evaluate!(atom() | String.t(), map(), keyword()) ::
-                SystemOneSDK.SystemOneResponse.t() | map()
-        def evaluate!(key, state, opts \\ []),
-          do: Runner.evaluate!(__MODULE__, key, state, opts)
+    has_2? = Module.defines?(mod, {:evaluate!, 2})
+    has_3? = Module.defines?(mod, {:evaluate!, 3})
 
-        defoverridable evaluate!: 2, evaluate!: 3
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) or raises `SystemOneDSL.Error` / `SystemOneSDK.Error`."
+          @spec evaluate!(atom() | String.t(), map(), keyword()) ::
+                  SystemOneSDK.SystemOneResponse.t() | map()
+          def evaluate!(key, state, opts \\ []),
+            do: Runner.evaluate!(__MODULE__, key, state, opts)
+
+          defoverridable evaluate!: 2, evaluate!: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) or raises `SystemOneDSL.Error` / `SystemOneSDK.Error`."
+          @spec evaluate!(atom() | String.t(), map()) ::
+                  SystemOneSDK.SystemOneResponse.t() | map()
+          def evaluate!(key, state), do: evaluate!(key, state, [])
+
+          defoverridable evaluate!: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) or raises `SystemOneDSL.Error` / `SystemOneSDK.Error`."
+          @spec evaluate!(atom() | String.t(), map(), keyword()) ::
+                  SystemOneSDK.SystemOneResponse.t() | map()
+          def evaluate!(key, state, opts),
+            do: Runner.evaluate!(__MODULE__, key, state, opts)
+
+          defoverridable evaluate!: 3
+        end
+
+      true ->
+        nil
     end
   end
 
   defp maybe_quote_evaluate_many(mod) do
-    unless Module.defines?(mod, {:evaluate_many, 3}) do
-      quote do
-        @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
-        @spec evaluate_many(atom() | String.t(), [map()], keyword()) ::
-                [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
-        def evaluate_many(key, states, opts \\ []),
-          do: Runner.evaluate_many(__MODULE__, key, states, opts)
+    has_2? = Module.defines?(mod, {:evaluate_many, 2})
+    has_3? = Module.defines?(mod, {:evaluate_many, 3})
 
-        defoverridable evaluate_many: 2, evaluate_many: 3
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
+          @spec evaluate_many(atom() | String.t(), [map()], keyword()) ::
+                  [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
+          def evaluate_many(key, states, opts \\ []),
+            do: Runner.evaluate_many(__MODULE__, key, states, opts)
+
+          defoverridable evaluate_many: 2, evaluate_many: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
+          @spec evaluate_many(atom() | String.t(), [map()]) ::
+                  [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
+          def evaluate_many(key, states), do: evaluate_many(key, states, [])
+
+          defoverridable evaluate_many: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
+          @spec evaluate_many(atom() | String.t(), [map()], keyword()) ::
+                  [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
+          def evaluate_many(key, states, opts),
+            do: Runner.evaluate_many(__MODULE__, key, states, opts)
+
+          defoverridable evaluate_many: 3
+        end
+
+      true ->
+        nil
     end
   end
 

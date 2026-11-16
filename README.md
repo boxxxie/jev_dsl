@@ -173,7 +173,11 @@ children = [
 
 ### Gemini Decisions API (`gemini-decision-1`)
 
-`SystemOneDSL` also supports Google's **Gemini Decisions API** (`gemini-decision-1`) via both LiteLLM's unified `/v1/decisions` endpoint and native `/v1beta/decisions` (or `/gemini/v1beta/decisions` passthrough):
+`SystemOneDSL` supports Google's **Gemini Decisions API** (`gemini-decision-1`) via `backend: :gemini_decisions` (`SystemOneSDK.Providers.GeminiDecisions`) in two wire modes:
+
+* **Unified LiteLLM (`decisions_mode: :unified`, default)** — sends `/v1/decisions` requests with `Authorization: Bearer <token>`. Requires an explicit `:base_url`, `otp_app` `:litellm_base_url`/`:base_url`, or `LITELLM_BASE_URL`.
+* **Native Gemini (`decisions_mode: :native`)** — sends `/v1beta/decisions` (against `generativelanguage.googleapis.com`, the default native host, or proxies/gateways; pass `decisions_path: "/gemini/v1beta/decisions"` or a `/gemini` base URL for LiteLLM passthrough) with `x-goog-api-key`.
+* **Keyless & Proxy Auth (`auth_mode: :none`)** — omits `Authorization` and `x-goog-api-key` headers for local proxies or mTLS/custom-header gateways (`extra_headers` / `headers`).
 
 ```elixir
 # LiteLLM unified /v1/decisions (Authorization: Bearer)
@@ -183,14 +187,14 @@ defmodule MyApp.UnifiedGeminiContracts do
     backend: :gemini_decisions,
     decisions_mode: :unified,
     model: "gemini-decision-1",
-    base_url: "http://100.88.180.12:4000"
+    base_url: "http://localhost:4000"
 
   defnoul :is_spam do
     "Does this message contain unsolicited promotional spam?"
   end
 end
 
-# Native /gemini/v1beta/decisions passthrough (x-goog-api-key)
+# Native /v1beta/decisions (x-goog-api-key)
 defmodule MyApp.NativeGeminiContracts do
   use SystemOneDSL,
     otp_app: :my_app,
@@ -198,7 +202,7 @@ defmodule MyApp.NativeGeminiContracts do
     decisions_mode: :native,
     auth_mode: :x_goog_api_key,
     model: "gemini-decision-1",
-    base_url: "https://2-29-102-196.sslip.io"
+    base_url: "https://generativelanguage.googleapis.com"
 
   defnoul :is_spam do
     "Does this message contain unsolicited promotional spam?"
@@ -206,7 +210,9 @@ defmodule MyApp.NativeGeminiContracts do
 end
 ```
 
-API keys for `:gemini_decisions` are resolved from `:gemini_api_key` / `:api_key` options, `otp_app` config, `LITELLM_API_KEY`, or `GEMINI_API_KEY`.
+Key & endpoint resolution details:
+* **API keys:** Resolved from `:gemini_api_key` / `:api_key` (supporting strings, `{:system, "ENV"}`, 0-arity functions, or `{mod, fun, args}`), `otp_app` / `:system_one_dsl` app config, and environment variables. In `:native` mode targeting Google, `GEMINI_API_KEY` takes precedence over `LITELLM_API_KEY` / `LITELLM_MASTER_KEY`; in `:unified` or proxy modes, `LITELLM_*` takes precedence.
+* **Per-call overrides & pre-built clients:** Pass `backend:`, `decisions_mode:`, `auth_mode:`, `decisions_path:`, `base_url:`, `model:`, `extra_body:`, or `extra_headers:` per `evaluate/3` or `evaluate_many/3` call, or pass separate pre-built `SystemOneSDK.new_client(provider: SystemOneSDK.Providers.GeminiDecisions, ...)` clients per mode/endpoint. Cache keys automatically isolate across backend, mode, and model.
 
 ---
 

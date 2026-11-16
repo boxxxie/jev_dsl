@@ -42,6 +42,8 @@ defmodule SystemOneDSL.Cache do
       end
   """
 
+  alias SystemOneSDK.Providers.GeminiDecisions
+
   @type cache_key :: String.t()
   @type batch_entry :: {cache_key(), atom() | String.t(), map(), term()}
 
@@ -85,22 +87,76 @@ defmodule SystemOneDSL.Cache do
   def identity(state, prepared, opts \\ []) do
     fp = extract_fingerprint(prepared, opts)
 
+    case Keyword.get(opts, :client) do
+      %SystemOneSDK.Client{provider: GeminiDecisions, provider_client: pclient} = client ->
+        gemini_client_identity(state, fp, client, pclient, opts)
+
+      %SystemOneSDK.Client{} ->
+        %{service: :system_one, state: state, fingerprint: fp}
+
+      _ ->
+        backend_identity(state, fp, opts)
+    end
+  end
+
+  defp gemini_client_identity(state, fp, client, pclient, opts) do
+    decisions_mode =
+      case pclient do
+        %GeminiDecisions.Client{decisions_mode: mode} -> mode
+        _ -> :unified
+      end
+
+    model =
+      Keyword.get(opts, :model) || client.default_model ||
+        (pclient && pclient.default_model) || "gemini-decision-1"
+
+    %{
+      service: :gemini_decisions,
+      decisions_mode: decisions_mode,
+      model: model,
+      state: state,
+      fingerprint: fp
+    }
+  end
+
+  defp backend_identity(state, fp, opts) do
     case Keyword.get(opts, :backend, :system_one) do
       :gemini_decisions ->
+        decisions_mode =
+          case Keyword.get(opts, :decisions_mode) do
+            nil ->
+              :unified
+
+            mode when mode in [:unified, :native] ->
+              mode
+
+            other ->
+              raise SystemOneDSL.Error.invalid_options(
+                      "Invalid :decisions_mode #{inspect(other)}. Expected :unified or :native.",
+                      %{decisions_mode: other}
+                    )
+          end
+
         %{
           service: :gemini_decisions,
-          decisions_mode: Keyword.get(opts, :decisions_mode, :unified),
+          decisions_mode: decisions_mode,
           model: Keyword.get(opts, :model) || "gemini-decision-1",
           state: state,
           fingerprint: fp
         }
 
-      _ ->
+      backend when backend in [:system_one, nil] ->
         %{
           service: :system_one,
           state: state,
           fingerprint: fp
         }
+
+      other ->
+        raise SystemOneDSL.Error.invalid_options(
+                "Invalid :backend #{inspect(other)}. Expected :system_one or :gemini_decisions.",
+                %{backend: other}
+              )
     end
   end
 
@@ -176,17 +232,24 @@ defmodule SystemOneDSL.Cache do
 
   def cacheable?({:ok, %SystemOneSDK.SystemOneResponse{answers: answers}}, opts)
       when is_map(answers) and map_size(answers) > 0 do
-    min_conf = Keyword.get(opts, :min_confidence, @default_min_confidence)
+    min_conf = resolve_min_confidence(opts)
     Enum.all?(Map.values(answers), &answer_confident?(&1, min_conf))
   end
 
   def cacheable?({:ok, %{answers: answers}}, opts)
       when is_map(answers) and map_size(answers) > 0 do
-    min_conf = Keyword.get(opts, :min_confidence, @default_min_confidence)
+    min_conf = resolve_min_confidence(opts)
     Enum.all?(Map.values(answers), &answer_confident?(&1, min_conf))
   end
 
   def cacheable?(_, _opts), do: false
+
+  defp resolve_min_confidence(opts) do
+    case Keyword.get(opts, :min_confidence) do
+      conf when is_number(conf) -> conf
+      _ -> @default_min_confidence
+    end
+  end
 
   @doc """
   Returns `true` if the evaluation result is a valid `SystemOneResponse` eligible for
@@ -202,7 +265,7 @@ defmodule SystemOneDSL.Cache do
   """
   @spec resolve_ttl(term(), keyword()) :: {:ok, pos_integer()} | :skip
   def resolve_ttl(result, opts \\ []) do
-    base_ttl = Keyword.get(opts, :cache_ttl, Keyword.get(opts, :ttl, @default_ttl))
+    base_ttl = resolve_base_ttl(opts)
 
     cond do
       cacheable?(result, opts) ->
@@ -216,9 +279,21 @@ defmodule SystemOneDSL.Cache do
     end
   end
 
+  defp resolve_base_ttl(opts) do
+    case Keyword.get(opts, :cache_ttl) || Keyword.get(opts, :ttl) do
+      ttl when is_integer(ttl) and ttl > 0 -> ttl
+      _ -> @default_ttl
+    end
+  end
+
   defp answer_confident?(%SystemOneSDK.ChoiceAnswer{probabilities: probs}, min_conf)
        when is_map(probs) and map_size(probs) > 0 do
     Enum.max(Map.values(probs)) >= min_conf
+  end
+
+  defp answer_confident?(%SystemOneSDK.ChoiceAnswer{confidence: conf}, min_conf)
+       when is_number(conf) do
+    conf >= min_conf
   end
 
   defp answer_confident?(%SystemOneSDK.NoulAnswer{noul: noul}, min_conf)
@@ -250,6 +325,10 @@ defmodule SystemOneDSL.Cache do
     Enum.max(Map.values(probs)) >= min_conf
   end
 
+  defp answer_confident?(%{confidence: conf}, min_conf) when is_number(conf) do
+    conf >= min_conf
+  end
+
   defp answer_confident?(%{noul: noul}, min_conf) when is_number(noul) do
     max(noul, 1.0 - noul) >= min_conf
   end
@@ -260,9 +339,9 @@ defmodule SystemOneDSL.Cache do
   Reads a key from the given `adapter` module implementing `SystemOneDSL.Cache`.
   """
   @spec adapter_get(module() | nil, cache_key(), keyword()) :: {:ok, term()} | :miss
-  def adapter_get(nil, _key, _opts), do: :miss
+  def adapter_get(adapter, _key, _opts) when adapter in [nil, false], do: :miss
 
-  def adapter_get(adapter, key, opts) when is_atom(adapter) do
+  def adapter_get(adapter, key, opts) when is_atom(adapter) and not is_boolean(adapter) do
     start_t = System.monotonic_time()
 
     case adapter.get(key, opts) do
@@ -285,10 +364,11 @@ defmodule SystemOneDSL.Cache do
   @spec adapter_get_many(module() | nil, [cache_key()], keyword()) :: %{
           optional(cache_key()) => term()
         }
-  def adapter_get_many(nil, _keys, _opts), do: %{}
+  def adapter_get_many(adapter, _keys, _opts) when adapter in [nil, false], do: %{}
   def adapter_get_many(_adapter, [], _opts), do: %{}
 
-  def adapter_get_many(adapter, keys, opts) when is_atom(adapter) and is_list(keys) do
+  def adapter_get_many(adapter, keys, opts)
+      when is_atom(adapter) and not is_boolean(adapter) and is_list(keys) do
     uniq_keys = Enum.uniq(keys)
     Code.ensure_loaded(adapter)
 
@@ -334,9 +414,9 @@ defmodule SystemOneDSL.Cache do
   Writes a key/value to the given `adapter` module if `resolve_ttl/2` approves caching.
   """
   @spec adapter_put(module() | nil, cache_key(), term(), keyword()) :: :ok
-  def adapter_put(nil, _key, _value, _opts), do: :ok
+  def adapter_put(adapter, _key, _value, _opts) when adapter in [nil, false], do: :ok
 
-  def adapter_put(adapter, key, value, opts) when is_atom(adapter) do
+  def adapter_put(adapter, key, value, opts) when is_atom(adapter) and not is_boolean(adapter) do
     case resolve_ttl(value, opts) do
       {:ok, ttl} ->
         start_t = System.monotonic_time()
@@ -355,21 +435,15 @@ defmodule SystemOneDSL.Cache do
   Batch-writes `[batch_entry()]` to an adapter via `put_many/2` if exported, falling back to `put/3`.
   """
   @spec adapter_put_many(module() | nil, [batch_entry()], keyword()) :: :ok
-  def adapter_put_many(nil, _entries, _opts), do: :ok
+  def adapter_put_many(adapter, _entries, _opts) when adapter in [nil, false], do: :ok
   def adapter_put_many(_adapter, [], _opts), do: :ok
 
-  def adapter_put_many(adapter, entries, opts) when is_atom(adapter) and is_list(entries) do
+  def adapter_put_many(adapter, entries, opts)
+      when is_atom(adapter) and not is_boolean(adapter) and is_list(entries) do
     Code.ensure_loaded(adapter)
 
     if function_exported?(adapter, :put_many, 2) do
-      start_t = System.monotonic_time()
-      _ = adapter.put_many(entries, opts)
-
-      Enum.each(entries, fn {key, _contract, _state, _value} ->
-        emit_cache_telemetry(:write, start_t, key, adapter, opts)
-      end)
-
-      :ok
+      put_many_via_callback(adapter, entries, opts)
     else
       Enum.each(entries, fn {key, _contract, _state, value} ->
         adapter_put(adapter, key, value, opts)
@@ -377,6 +451,45 @@ defmodule SystemOneDSL.Cache do
     end
   rescue
     _ -> :ok
+  end
+
+  defp put_many_via_callback(adapter, entries, opts) do
+    entries
+    |> group_entries_by_ttl(opts)
+    |> Enum.each(fn {ttl, group_entries} ->
+      start_t = System.monotonic_time()
+      _ = adapter.put_many(group_entries, Keyword.put(opts, :ttl, ttl))
+
+      Enum.each(group_entries, fn {key, _contract, _state, _value} ->
+        emit_cache_telemetry(:write, start_t, key, adapter, opts)
+      end)
+    end)
+
+    :ok
+  end
+
+  defp group_entries_by_ttl(entries, opts) do
+    {ttl_order_rev, grouped} =
+      Enum.reduce(entries, {[], %{}}, &accumulate_ttl_entry(&1, &2, opts))
+
+    ttl_order_rev
+    |> Enum.reverse()
+    |> Enum.map(fn ttl -> {ttl, grouped |> Map.fetch!(ttl) |> Enum.reverse()} end)
+  end
+
+  defp accumulate_ttl_entry(
+         {_key, _contract, _state, value} = entry,
+         {order_acc, groups_acc},
+         opts
+       ) do
+    case resolve_ttl(value, opts) do
+      {:ok, ttl} ->
+        new_order = if Map.has_key?(groups_acc, ttl), do: order_acc, else: [ttl | order_acc]
+        {new_order, Map.update(groups_acc, ttl, [entry], &[entry | &1])}
+
+      :skip ->
+        {order_acc, groups_acc}
+    end
   end
 
   defp emit_cache_telemetry(event, start_t, key, adapter, opts) do
