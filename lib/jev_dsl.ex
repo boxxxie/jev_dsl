@@ -900,7 +900,11 @@ defmodule JevDSL do
   end
 
   defp maybe_quote_available(mod) do
-    if not Module.defines?(mod, {:available?, 2}) do
+    has_0? = Module.defines?(mod, {:available?, 0})
+    has_1? = Module.defines?(mod, {:available?, 1})
+    has_2? = Module.defines?(mod, {:available?, 2})
+
+    if not has_0? and not has_1? and not has_2? do
       quote do
         @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
         @spec available?(keyword(), atom()) :: boolean()
@@ -910,47 +914,174 @@ defmodule JevDSL do
 
         defoverridable available?: 0, available?: 1, available?: 2
       end
+    else
+      [
+        maybe_quote_available_0(has_0?),
+        maybe_quote_available_1(has_1?),
+        maybe_quote_available_2(has_2?)
+      ]
+    end
+  end
+
+  defp maybe_quote_available_0(true), do: nil
+
+  defp maybe_quote_available_0(false) do
+    quote do
+      @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
+      @spec available?() :: boolean()
+      def available?, do: available?([])
+
+      defoverridable available?: 0
+    end
+  end
+
+  defp maybe_quote_available_1(true), do: nil
+
+  defp maybe_quote_available_1(false) do
+    quote do
+      @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
+      @spec available?(keyword()) :: boolean()
+      def available?(opts), do: available?(opts, :eval_fn)
+
+      defoverridable available?: 1
+    end
+  end
+
+  defp maybe_quote_available_2(true), do: nil
+
+  defp maybe_quote_available_2(false) do
+    quote do
+      @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
+      @spec available?(keyword(), atom()) :: boolean()
+      def available?(opts, eval_fn_key) do
+        Runner.available?(__MODULE__, opts, eval_fn_key)
+      end
+
+      defoverridable available?: 2
     end
   end
 
   defp maybe_quote_evaluate(mod) do
-    if not Module.defines?(mod, {:evaluate, 3}) do
-      quote do
-        @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
-        @spec evaluate(atom() | String.t(), map(), keyword()) ::
-                {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
-        def evaluate(key, state, opts \\ []), do: Runner.evaluate(__MODULE__, key, state, opts)
+    has_2? = Module.defines?(mod, {:evaluate, 2})
+    has_3? = Module.defines?(mod, {:evaluate, 3})
 
-        defoverridable evaluate: 2, evaluate: 3
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
+          @spec evaluate(atom() | String.t(), map(), keyword()) ::
+                  {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
+          def evaluate(key, state, opts \\ []), do: Runner.evaluate(__MODULE__, key, state, opts)
+
+          defoverridable evaluate: 2, evaluate: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
+          @spec evaluate(atom() | String.t(), map()) ::
+                  {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
+          def evaluate(key, state), do: evaluate(key, state, [])
+
+          defoverridable evaluate: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
+          @spec evaluate(atom() | String.t(), map(), keyword()) ::
+                  {:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}
+          def evaluate(key, state, opts), do: Runner.evaluate(__MODULE__, key, state, opts)
+
+          defoverridable evaluate: 3
+        end
+
+      true ->
+        nil
     end
   end
 
   defp maybe_quote_evaluate_bang(mod) do
-    if not Module.defines?(mod, {:evaluate!, 3}) do
-      quote do
-        @doc "Evaluates `state` against `key` (atom or string) or raises `JevDSL.Error` / `SystemOneSDK.Error`."
-        @spec evaluate!(atom() | String.t(), map(), keyword()) ::
-                SystemOneSDK.SystemOneResponse.t() | map()
-        def evaluate!(key, state, opts \\ []),
-          do: Runner.evaluate!(__MODULE__, key, state, opts)
+    has_2? = Module.defines?(mod, {:evaluate!, 2})
+    has_3? = Module.defines?(mod, {:evaluate!, 3})
 
-        defoverridable evaluate!: 2, evaluate!: 3
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) or raises `JevDSL.Error` / `SystemOneSDK.Error`."
+          @spec evaluate!(atom() | String.t(), map(), keyword()) ::
+                  SystemOneSDK.SystemOneResponse.t() | map()
+          def evaluate!(key, state, opts \\ []),
+            do: Runner.evaluate!(__MODULE__, key, state, opts)
+
+          defoverridable evaluate!: 2, evaluate!: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) or raises `JevDSL.Error` / `SystemOneSDK.Error`."
+          @spec evaluate!(atom() | String.t(), map()) ::
+                  SystemOneSDK.SystemOneResponse.t() | map()
+          def evaluate!(key, state), do: evaluate!(key, state, [])
+
+          defoverridable evaluate!: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Evaluates `state` against `key` (atom or string) or raises `JevDSL.Error` / `SystemOneSDK.Error`."
+          @spec evaluate!(atom() | String.t(), map(), keyword()) ::
+                  SystemOneSDK.SystemOneResponse.t() | map()
+          def evaluate!(key, state, opts),
+            do: Runner.evaluate!(__MODULE__, key, state, opts)
+
+          defoverridable evaluate!: 3
+        end
+
+      true ->
+        nil
     end
   end
 
   defp maybe_quote_evaluate_many(mod) do
-    if not Module.defines?(mod, {:evaluate_many, 3}) do
-      quote do
-        @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
-        @spec evaluate_many(atom() | String.t(), [map()], keyword()) ::
-                [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
-        def evaluate_many(key, states, opts \\ []),
-          do: Runner.evaluate_many(__MODULE__, key, states, opts)
+    has_2? = Module.defines?(mod, {:evaluate_many, 2})
+    has_3? = Module.defines?(mod, {:evaluate_many, 3})
 
-        defoverridable evaluate_many: 2, evaluate_many: 3
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
+          @spec evaluate_many(atom() | String.t(), [map()], keyword()) ::
+                  [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
+          def evaluate_many(key, states, opts \\ []),
+            do: Runner.evaluate_many(__MODULE__, key, states, opts)
+
+          defoverridable evaluate_many: 2, evaluate_many: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
+          @spec evaluate_many(atom() | String.t(), [map()]) ::
+                  [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
+          def evaluate_many(key, states), do: evaluate_many(key, states, [])
+
+          defoverridable evaluate_many: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
+          @spec evaluate_many(atom() | String.t(), [map()], keyword()) ::
+                  [{:ok, SystemOneSDK.SystemOneResponse.t() | map()} | {:error, term()}]
+          def evaluate_many(key, states, opts),
+            do: Runner.evaluate_many(__MODULE__, key, states, opts)
+
+          defoverridable evaluate_many: 3
+        end
+
+      true ->
+        nil
     end
   end
 

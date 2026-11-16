@@ -253,6 +253,114 @@ defmodule JevDSLTest do
       assert JevDSLTest.PartialCacheKey3.cache_key(:is_spam, %{a: 1}, tag: :x) ==
                "custom3_is_spam_x"
     end
+
+    test "supports partial overrides of available?, evaluate, evaluate!, and evaluate_many across arities" do
+      {_mods, diagnostics} =
+        Code.with_diagnostics(fn ->
+          Code.compile_string("""
+          defmodule JevDSLTest.PartialRunnerLowerArity do
+            use JevDSL
+            defnoul :is_spam do "Spam?" end
+
+            def available?, do: true
+            def evaluate(key, state), do: {:ok, {:custom_eval_2, key, state}}
+            def evaluate!(key, state), do: {:custom_eval_bang_2, key, state}
+            def evaluate_many(key, states), do: Enum.map(states, &{:ok, {:custom_many_2, key, &1}})
+          end
+
+          defmodule JevDSLTest.PartialRunnerHigherArity do
+            use JevDSL
+            defnoul :is_spam do "Spam?" end
+
+            def available?(opts, eval_fn_key),
+              do: Keyword.get(opts, :flag, false) and eval_fn_key == :eval_fn
+
+            def evaluate(key, state, opts),
+              do: {:ok, {:custom_eval_3, key, state, Keyword.get(opts, :tag, :none)}}
+
+            def evaluate!(key, state, opts),
+              do: {:custom_eval_bang_3, key, state, Keyword.get(opts, :tag, :none)}
+
+            def evaluate_many(key, states, opts) do
+              tag = Keyword.get(opts, :tag, :none)
+              Enum.map(states, &{:ok, {:custom_many_3, key, &1, tag}})
+            end
+          end
+
+          defmodule JevDSLTest.PartialAvailableOne do
+            use JevDSL
+            defnoul :is_spam do "Spam?" end
+
+            def available?(opts \\\\ []), do: Keyword.get(opts, :custom, false)
+          end
+          """)
+        end)
+
+      assert diagnostics == []
+
+      lower = Module.concat(JevDSLTest, :PartialRunnerLowerArity)
+      higher = Module.concat(JevDSLTest, :PartialRunnerHigherArity)
+      avail_one = Module.concat(JevDSLTest, :PartialAvailableOne)
+
+      assert lower.available?() == true
+      assert lower.available?(api_key: false) == false
+
+      assert lower.available?(
+               [api_key: false, custom_fn: fn _ -> {:ok, %{}} end],
+               :custom_fn
+             ) == true
+
+      assert lower.evaluate(:is_spam, %{a: 1}) ==
+               {:ok, {:custom_eval_2, :is_spam, %{a: 1}}}
+
+      assert lower.evaluate(:is_spam, %{a: 1}, eval_fn: fn s -> {:ok, {:runner_3, s}} end) ==
+               {:ok, {:runner_3, %{a: 1}}}
+
+      assert lower.evaluate!(:is_spam, %{a: 1}) ==
+               {:custom_eval_bang_2, :is_spam, %{a: 1}}
+
+      assert lower.evaluate!(:is_spam, %{a: 1}, eval_fn: fn s -> {:ok, {:runner_bang_3, s}} end) ==
+               {:runner_bang_3, %{a: 1}}
+
+      assert lower.evaluate_many(:is_spam, [%{a: 1}]) ==
+               [{:ok, {:custom_many_2, :is_spam, %{a: 1}}}]
+
+      assert lower.evaluate_many(:is_spam, [%{a: 1}],
+               eval_fn: fn s -> {:ok, {:runner_many_3, s}} end
+             ) == [{:ok, {:runner_many_3, %{a: 1}}}]
+
+      assert higher.available?() == false
+      assert higher.available?(flag: true) == true
+      assert higher.available?([flag: true], :eval_fn) == true
+      assert higher.available?([flag: true], :other) == false
+
+      assert higher.evaluate(:is_spam, %{a: 1}) ==
+               {:ok, {:custom_eval_3, :is_spam, %{a: 1}, :none}}
+
+      assert higher.evaluate(:is_spam, %{a: 1}, tag: :x) ==
+               {:ok, {:custom_eval_3, :is_spam, %{a: 1}, :x}}
+
+      assert higher.evaluate!(:is_spam, %{a: 1}) ==
+               {:custom_eval_bang_3, :is_spam, %{a: 1}, :none}
+
+      assert higher.evaluate!(:is_spam, %{a: 1}, tag: :x) ==
+               {:custom_eval_bang_3, :is_spam, %{a: 1}, :x}
+
+      assert higher.evaluate_many(:is_spam, [%{a: 1}]) ==
+               [{:ok, {:custom_many_3, :is_spam, %{a: 1}, :none}}]
+
+      assert higher.evaluate_many(:is_spam, [%{a: 1}], tag: :x) ==
+               [{:ok, {:custom_many_3, :is_spam, %{a: 1}, :x}}]
+
+      assert avail_one.available?() == false
+      assert avail_one.available?(custom: true) == true
+      assert avail_one.available?([api_key: false], :eval_fn) == false
+
+      assert avail_one.available?(
+               [api_key: false, custom_fn: fn _ -> {:ok, %{}} end],
+               :custom_fn
+             ) == true
+    end
   end
 
   describe "JevDSL.Cache deterministic hashing, property invariants & ETS resilience" do
