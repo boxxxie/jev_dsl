@@ -861,15 +861,41 @@ defmodule JevDSL do
   end
 
   defp maybe_quote_cache_key(mod) do
-    if not (Module.defines?(mod, {:cache_key, 2}) or Module.defines?(mod, {:cache_key, 3})) do
-      quote do
-        @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
-        @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
-        def cache_key(key, state, opts \\ []),
-          do: Runner.cache_key(__MODULE__, key, state, opts)
+    has_2? = Module.defines?(mod, {:cache_key, 2})
+    has_3? = Module.defines?(mod, {:cache_key, 3})
 
-        defoverridable cache_key: 2, cache_key: 3
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
+          @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
+          def cache_key(key, state, opts \\ []),
+            do: Runner.cache_key(__MODULE__, key, state, opts)
+
+          defoverridable cache_key: 2, cache_key: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
+          @spec cache_key(atom() | String.t(), term()) :: String.t()
+          def cache_key(key, state), do: cache_key(key, state, [])
+
+          defoverridable cache_key: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string), `state`, and `opts`."
+          @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
+          def cache_key(key, state, opts),
+            do: Runner.cache_key(__MODULE__, key, state, opts)
+
+          defoverridable cache_key: 3
+        end
+
+      true ->
+        nil
     end
   end
 

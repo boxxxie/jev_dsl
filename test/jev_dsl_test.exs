@@ -225,6 +225,34 @@ defmodule JevDSLTest do
         """)
       end
     end
+
+    test "supports partial cache_key/2 or cache_key/3 overrides without leaving the other arity undefined" do
+      Code.compile_string("""
+      defmodule JevDSLTest.PartialCacheKey2 do
+        use JevDSL
+        defnoul :is_spam do "Spam?" end
+        def cache_key(key, _state), do: "custom2_\#{key}"
+      end
+
+      defmodule JevDSLTest.PartialCacheKey3 do
+        use JevDSL
+        defnoul :is_spam do "Spam?" end
+        def cache_key(key, _state, opts), do: "custom3_\#{key}_\#{Keyword.get(opts, :tag, :none)}"
+      end
+      """)
+
+      assert JevDSLTest.PartialCacheKey2.cache_key(:is_spam, %{a: 1}) == "custom2_is_spam"
+
+      assert String.starts_with?(
+               JevDSLTest.PartialCacheKey2.cache_key(:is_spam, %{a: 1}, []),
+               "jev_"
+             )
+
+      assert JevDSLTest.PartialCacheKey3.cache_key(:is_spam, %{a: 1}) == "custom3_is_spam_none"
+
+      assert JevDSLTest.PartialCacheKey3.cache_key(:is_spam, %{a: 1}, tag: :x) ==
+               "custom3_is_spam_x"
+    end
   end
 
   describe "JevDSL.Cache deterministic hashing, property invariants & ETS resilience" do
