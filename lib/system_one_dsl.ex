@@ -73,7 +73,7 @@ defmodule SystemOneDSL do
         )
   """
 
-  alias SystemOneDSL.{Cache, Contract, CUE, Question, Runner}
+  alias SystemOneDSL.{Contract, CUE, Question, Runner}
   alias SystemOneSDK.Question, as: SDKQuestion
 
   @use_schema NimbleOptions.new!(
@@ -141,8 +141,8 @@ defmodule SystemOneDSL do
                     "Wire format for `:gemini_decisions` (`:unified` for `/v1/decisions`, `:native` for `/v1beta/decisions`)."
                 ],
                 auth_mode: [
-                  type: {:in, [:bearer, :x_goog_api_key]},
-                  doc: "Authentication header mode (`:bearer` or `:x_goog_api_key`)."
+                  type: {:in, [:bearer, :x_goog_api_key, :none]},
+                  doc: "Authentication header mode (`:bearer`, `:x_goog_api_key`, or `:none`)."
                 ],
                 decisions_path: [
                   type: :string,
@@ -872,20 +872,46 @@ defmodule SystemOneDSL do
   end
 
   defp maybe_quote_cache_key(mod) do
-    unless Module.defines?(mod, {:cache_key, 2}) do
-      quote do
-        @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
-        @spec cache_key(atom() | String.t(), term()) :: String.t()
-        def cache_key(key, state),
-          do: Cache.key(state, prepared(key), __system_one_dsl_opts__())
+    has_2? = Module.defines?(mod, {:cache_key, 2})
+    has_3? = Module.defines?(mod, {:cache_key, 3})
 
-        defoverridable cache_key: 2
-      end
+    cond do
+      not has_2? and not has_3? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
+          @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
+          def cache_key(key, state, opts \\ []),
+            do: Runner.cache_key(__MODULE__, key, state, opts)
+
+          defoverridable cache_key: 2, cache_key: 3
+        end
+
+      not has_2? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string) and `state`."
+          @spec cache_key(atom() | String.t(), term()) :: String.t()
+          def cache_key(key, state), do: cache_key(key, state, [])
+
+          defoverridable cache_key: 2
+        end
+
+      not has_3? ->
+        quote do
+          @doc "Computes the deterministic SHA-256 cache key (`\"jev_<sha256>\"`) for `key` (atom or string), `state`, and `opts`."
+          @spec cache_key(atom() | String.t(), term(), keyword()) :: String.t()
+          def cache_key(key, state, opts),
+            do: Runner.cache_key(__MODULE__, key, state, opts)
+
+          defoverridable cache_key: 3
+        end
+
+      true ->
+        nil
     end
   end
 
   defp maybe_quote_available(mod) do
-    unless Module.defines?(mod, {:available?, 2}) do
+    if not Module.defines?(mod, {:available?, 2}) do
       quote do
         @doc "Returns `true` if this contract module can evaluate contracts (via mock, client, API key, or Tier-2 cache)."
         @spec available?(keyword(), atom()) :: boolean()
@@ -899,7 +925,7 @@ defmodule SystemOneDSL do
   end
 
   defp maybe_quote_evaluate(mod) do
-    unless Module.defines?(mod, {:evaluate, 3}) do
+    if not Module.defines?(mod, {:evaluate, 3}) do
       quote do
         @doc "Evaluates `state` against `key` (atom or string) with automatic L1/L2 caching and mock support."
         @spec evaluate(atom() | String.t(), map(), keyword()) ::
@@ -912,7 +938,7 @@ defmodule SystemOneDSL do
   end
 
   defp maybe_quote_evaluate_bang(mod) do
-    unless Module.defines?(mod, {:evaluate!, 3}) do
+    if not Module.defines?(mod, {:evaluate!, 3}) do
       quote do
         @doc "Evaluates `state` against `key` (atom or string) or raises `SystemOneDSL.Error` / `SystemOneSDK.Error`."
         @spec evaluate!(atom() | String.t(), map(), keyword()) ::
@@ -926,7 +952,7 @@ defmodule SystemOneDSL do
   end
 
   defp maybe_quote_evaluate_many(mod) do
-    unless Module.defines?(mod, {:evaluate_many, 3}) do
+    if not Module.defines?(mod, {:evaluate_many, 3}) do
       quote do
         @doc "Evaluates `states` concurrently against `key` (atom or string) with L1/L2 caching and batching."
         @spec evaluate_many(atom() | String.t(), [map()], keyword()) ::

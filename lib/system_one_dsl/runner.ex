@@ -15,6 +15,7 @@ defmodule SystemOneDSL.Runner do
   """
 
   alias SystemOneDSL.{Cache, Error}
+  alias SystemOneSDK.Providers.GeminiDecisions
 
   @client_sdk_options [
     :base_url,
@@ -54,23 +55,39 @@ defmodule SystemOneDSL.Runner do
   ]
 
   @doc """
+  Computes the deterministic SHA-256 cache key (`"jev_<sha256>"`) using the contract
+  module's merged options (`use SystemOneDSL` + `otp_app` config + call overrides).
+  """
+  @spec cache_key(module(), atom() | String.t(), term(), keyword()) :: String.t()
+  def cache_key(contract_mod, contract_key, state, opts \\ []) do
+    merged = merge_module_opts!(contract_mod, opts)
+    Cache.key(state, contract_mod.prepared(contract_key), merged)
+  end
+
+  @doc """
   Returns `true` if the contract module can execute evaluations — either via an injected
   1-arity test function (`:eval_fn` or `:eval_fn_key`), an explicit `%SystemOneSDK.Client{}` (`:client`),
-  a configured `TYPESAFE_API_KEY`, or an enabled Tier-2 cache (`:tier2_cache`).
+  a configured API key (or `:gemini_decisions` keyless auth), or an enabled Tier-2 cache (`:tier2_cache`).
   """
   @spec available?(module(), keyword(), atom()) :: boolean()
   def available?(contract_mod, opts \\ [], eval_fn_key \\ :eval_fn) do
-    merged = merge_module_opts(contract_mod, opts)
-
-    cond do
-      is_function(Keyword.get(merged, eval_fn_key), 1) -> true
-      is_function(Keyword.get(merged, :eval_fn), 1) -> true
-      is_function(Keyword.get(merged, :jev_eval_fn), 1) -> true
-      has_client?(merged) -> true
-      has_api_key?(merged) -> true
-      Keyword.get(merged, :use_tier2_cache, true) and has_tier2_cache?(merged) -> true
-      true -> false
+    case merge_module_opts(contract_mod, opts) do
+      {:ok, merged} -> merged_available?(merged, eval_fn_key)
+      {:error, _} -> false
     end
+  end
+
+  defp merged_available?(merged, eval_fn_key) do
+    has_eval_fn?(merged, eval_fn_key) or
+      has_client?(merged) or
+      can_build_provider_client?(merged) or
+      (Keyword.get(merged, :use_tier2_cache, true) and has_tier2_cache?(merged))
+  end
+
+  defp has_eval_fn?(merged, eval_fn_key) do
+    Enum.any?([eval_fn_key, :eval_fn, :jev_eval_fn], fn key ->
+      is_function(Keyword.get(merged, key), 1)
+    end)
   end
 
   @doc """
@@ -81,14 +98,14 @@ defmodule SystemOneDSL.Runner do
     * `:cache?` - Enables L1/L2 caching (default: `true`).
     * `:cache` - L1 cache module implementing `SystemOneDSL.Cache` (default: module's configured `:cache` or `SystemOneDSL.Cache.ETS`).
     * `:tier2_cache` - Optional L2 durable cache module implementing `SystemOneDSL.Cache`.
-    * `:use_tier2_cache` - Allows serving L2 cache hits even when `TYPESAFE_API_KEY` is unset (default: `true`).
+    * `:use_tier2_cache` - Allows serving L2 cache hits even when API credentials are unset (default: `true`).
     * `:persist_tier2` - Persists new live evaluations and backfills L1 hits into L2 (default: `true`).
     * `:cache_only` - When `true`, resolves only from L1/L2 caches without making live network calls, returning `{:error, :cache_miss}` on misses.
     * `:eval_fn` - A 1-arity mock function `fn state -> {:ok, resp} end` for deterministic unit testing.
     * `:eval_fn_key` - Custom option key holding a 1-arity mock function (default: `:eval_fn`).
     * `:eval_fn_state` - Custom state map passed to the mock `eval_fn` when test assertions inspect extra fields.
     * `:client` - Pre-configured `%SystemOneSDK.Client{}` (including `SystemOneSDK.Test.client()`).
-    * `:typesafe_api_key` / `:api_key` - Explicit API key override.
+    * `:typesafe_api_key` / `:gemini_api_key` / `:api_key` - Explicit API key override.
     * `:base_url` / `:model` / `:timeout` / `:timeout_ms` / `:retry` - Forwarded to `SystemOneSDK`.
   """
   @spec evaluate(module(), atom() | String.t(), map(), keyword()) ::
@@ -117,25 +134,44 @@ defmodule SystemOneDSL.Runner do
 
   defp do_evaluate(contract_mod, contract_key, state, opts) do
     if valid_contract?(contract_mod, contract_key) do
-      merged = merge_module_opts(contract_mod, opts)
-      eval_fn = resolve_eval_fn(merged)
+      case merge_module_opts(contract_mod, opts) do
+        {:ok, merged} ->
+          run_single_evaluate(contract_mod, contract_key, state, merged)
 
-      cond do
-        is_function(eval_fn, 1) ->
-          eval_state = Keyword.get(merged, :eval_fn_state, state)
-          eval_fn.(eval_state)
-
-        can_run_or_tier2?(merged) ->
-          dispatch_single(contract_mod, contract_key, state, merged)
-
-        true ->
-          {:error, :no_api_key}
+        {:error, _} = err ->
+          err
       end
     else
       {:error, {:unknown_contract, contract_key}}
     end
   rescue
-    err -> {:error, err}
+    err in [Error, SystemOneSDK.Error] ->
+      {:error, err}
+
+    err ->
+      {:error,
+       %Error{
+         type: :evaluation_failed,
+         contract: contract_key,
+         message: Exception.message(err),
+         details: err
+       }}
+  end
+
+  defp run_single_evaluate(contract_mod, contract_key, state, merged) do
+    eval_fn = resolve_eval_fn(merged)
+
+    cond do
+      is_function(eval_fn, 1) ->
+        eval_state = Keyword.get(merged, :eval_fn_state, state)
+        eval_fn.(eval_state)
+
+      can_run_or_tier2?(merged) ->
+        dispatch_single(contract_mod, contract_key, state, merged)
+
+      true ->
+        {:error, :no_api_key}
+    end
   end
 
   @doc """
@@ -158,14 +194,29 @@ defmodule SystemOneDSL.Runner do
   end
 
   defp do_evaluate_many(contract_mod, contract_key, states, opts) do
-    if valid_contract?(contract_mod, contract_key) do
-      merged = merge_module_opts(contract_mod, opts)
+    with true <- valid_contract?(contract_mod, contract_key),
+         {:ok, merged} <- merge_module_opts(contract_mod, opts) do
       run_evaluate_many(contract_mod, contract_key, states, merged)
     else
-      Enum.map(states, fn _ -> {:error, {:unknown_contract, contract_key}} end)
+      false ->
+        Enum.map(states, fn _ -> {:error, {:unknown_contract, contract_key}} end)
+
+      {:error, _} = err ->
+        Enum.map(states, fn _ -> err end)
     end
   rescue
-    err -> Enum.map(states, fn _ -> {:error, err} end)
+    err in [Error, SystemOneSDK.Error] ->
+      Enum.map(states, fn _ -> {:error, err} end)
+
+    err ->
+      wrapped = %Error{
+        type: :evaluation_failed,
+        contract: contract_key,
+        message: Exception.message(err),
+        details: err
+      }
+
+      Enum.map(states, fn _ -> {:error, wrapped} end)
   end
 
   defp run_evaluate_many(contract_mod, contract_key, states, merged) do
@@ -192,39 +243,165 @@ defmodule SystemOneDSL.Runner do
 
     raw =
       case Keyword.get(opts, :backend, :system_one) do
-        :gemini_decisions -> gemini_api_key(opts, otp_app)
-        _ -> system_one_api_key(opts, otp_app)
+        :gemini_decisions ->
+          gemini_api_key(opts, otp_app)
+
+        backend when backend in [:system_one, nil] ->
+          system_one_api_key(opts, otp_app)
+
+        other ->
+          raise Error.invalid_options(
+                  "Invalid :backend #{inspect(other)}. Expected :system_one or :gemini_decisions.",
+                  %{backend: other}
+                )
       end
 
-    String.trim(to_string(raw || ""))
+    resolve_secret(raw) || ""
+  end
+
+  @doc false
+  def resolve_secret(atom) when is_atom(atom), do: nil
+  def resolve_secret(str) when is_binary(str), do: String.trim(str)
+
+  def resolve_secret({:system, env_var}) when is_binary(env_var) do
+    resolve_secret(System.get_env(env_var))
+  end
+
+  def resolve_secret({:system, env_var, default}) when is_binary(env_var) do
+    non_blank_secret(System.get_env(env_var)) || resolve_secret(default)
+  end
+
+  def resolve_secret(fun) when is_function(fun, 0), do: resolve_secret(fun.())
+
+  def resolve_secret({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args) do
+    apply(mod, fun, args) |> resolve_secret()
+  end
+
+  def resolve_secret(other) do
+    if String.Chars.impl_for(other) do
+      other |> to_string() |> String.trim()
+    else
+      ""
+    end
   end
 
   defp gemini_api_key(opts, otp_app) do
-    first_present([
-      fn -> Keyword.get(opts, :gemini_api_key) end,
-      fn -> Keyword.get(opts, :api_key) end,
-      fn -> otp_app && Application.get_env(otp_app, :gemini_api_key) end,
-      fn -> otp_app && Application.get_env(otp_app, :api_key) end,
-      fn -> System.get_env("LITELLM_API_KEY") end,
-      fn -> System.get_env("GEMINI_API_KEY") end
-    ])
+    decisions_mode =
+      case Keyword.get(opts, :decisions_mode) do
+        nil ->
+          :unified
+
+        mode when mode in [:unified, :native] ->
+          mode
+
+        other ->
+          raise Error.invalid_options(
+                  "Invalid :decisions_mode #{inspect(other)}. Expected :unified or :native.",
+                  %{decisions_mode: other}
+                )
+      end
+
+    base_url =
+      resolve_gemini_base_url(
+        Keyword.put_new(opts, :otp_app, otp_app),
+        decisions_mode
+      )
+
+    env_fallbacks =
+      if decisions_mode == :native and (is_nil(base_url) or google_decisions_host?(base_url)) do
+        [
+          fn -> System.get_env("GEMINI_API_KEY") end,
+          fn -> System.get_env("LITELLM_API_KEY") end,
+          fn -> System.get_env("LITELLM_MASTER_KEY") end
+        ]
+      else
+        [
+          fn -> System.get_env("LITELLM_API_KEY") end,
+          fn -> System.get_env("LITELLM_MASTER_KEY") end,
+          fn -> System.get_env("GEMINI_API_KEY") end
+        ]
+      end
+
+    resolve_key_candidates(
+      opts,
+      [:gemini_api_key, :api_key],
+      [
+        fn -> otp_app && Application.get_env(otp_app, :gemini_api_key) end,
+        fn -> otp_app && Application.get_env(otp_app, :api_key) end,
+        fn -> Application.get_env(:system_one_dsl, :gemini_api_key) end,
+        fn -> Application.get_env(:system_one_dsl, :api_key) end
+      ] ++ env_fallbacks
+    )
+  end
+
+  defp google_decisions_host?(base_url) do
+    case URI.parse(to_string(base_url)).host do
+      host when is_binary(host) ->
+        String.downcase(host) == "generativelanguage.googleapis.com"
+
+      _ ->
+        false
+    end
   end
 
   defp system_one_api_key(opts, otp_app) do
-    first_present([
-      fn -> Keyword.get(opts, :typesafe_api_key) end,
-      fn -> Keyword.get(opts, :api_key) end,
-      fn -> otp_app && Application.get_env(otp_app, :typesafe_api_key) end,
-      fn -> Application.get_env(:system_one_sdk, :api_key) end,
-      fn -> Application.get_env(:typesafe_api_sdk, :api_key) end,
-      fn -> System.get_env("TYPESAFE_API_KEY") end
-    ])
+    resolve_key_candidates(
+      opts,
+      [:typesafe_api_key, :api_key],
+      [
+        fn -> otp_app && Application.get_env(otp_app, :typesafe_api_key) end,
+        fn -> Application.get_env(:system_one_sdk, :api_key) end,
+        fn -> Application.get_env(:typesafe_api_sdk, :api_key) end,
+        fn -> System.get_env("TYPESAFE_API_KEY") end
+      ]
+    )
   end
 
-  defp first_present(funs), do: Enum.find_value(funs, & &1.())
+  defp resolve_key_candidates(opts, opt_keys, fallback_funs) do
+    opt_val = Enum.find_value(opt_keys, &non_blank_secret(Keyword.get(opts, &1)))
+
+    cond do
+      is_binary(opt_val) ->
+        opt_val
+
+      explicit_blank_opt?(opts, opt_keys) ->
+        ""
+
+      true ->
+        Enum.find_value(fallback_funs, fn fun -> non_blank_secret(fun.()) end)
+    end
+  end
+
+  @doc false
+  def resolve_override_secret(opts, keys, fallback_raw) do
+    opt_val = Enum.find_value(keys, &non_blank_secret(Keyword.get(opts, &1)))
+
+    cond do
+      is_binary(opt_val) -> opt_val
+      explicit_blank_opt?(opts, keys) -> nil
+      true -> resolve_secret(fallback_raw)
+    end
+  end
+
+  defp explicit_blank_opt?(opts, keys) do
+    Enum.any?(keys, fn key ->
+      case Keyword.fetch(opts, key) do
+        {:ok, false} -> true
+        {:ok, bin} when is_binary(bin) -> String.trim(bin) == ""
+        _ -> false
+      end
+    end)
+  end
+
+  defp non_blank_secret(raw) do
+    case resolve_secret(raw) do
+      val when is_binary(val) and val != "" -> val
+      _ -> nil
+    end
+  end
 
   @doc """
-  Returns `true` if a non-empty `TYPESAFE_API_KEY` is available.
+  Returns `true` if a non-empty API key is available.
   """
   @spec has_api_key?(keyword()) :: boolean()
   def has_api_key?(opts \\ []), do: api_key(opts) != ""
@@ -246,6 +423,13 @@ defmodule SystemOneDSL.Runner do
       Keyword.get(opts, :jev_eval_fn)
   end
 
+  defp merge_module_opts!(contract_mod, opts) do
+    case merge_module_opts(contract_mod, opts) do
+      {:ok, merged} -> merged
+      {:error, %Error{} = err} -> raise err
+    end
+  end
+
   defp merge_module_opts(contract_mod, opts) do
     Code.ensure_loaded(contract_mod)
 
@@ -264,18 +448,211 @@ defmodule SystemOneDSL.Runner do
         _ -> []
       end
 
-    base_opts
-    |> Keyword.merge(app_mod_opts)
-    |> Keyword.merge(opts)
+    module_opts = Keyword.merge(base_opts, app_mod_opts)
+    raw_merged = Keyword.merge(module_opts, opts)
+
+    with :ok <- validate_runtime_opts(raw_merged) do
+      {:ok, sync_client_opts(raw_merged, module_opts, opts)}
+    end
   end
+
+  defp validate_runtime_opts(opts) do
+    with :ok <- validate_backend_opt(opts) do
+      case GeminiDecisions.validate_provider_opts(opts) do
+        :ok ->
+          :ok
+
+        {:error, %SystemOneSDK.Error{message: msg, details: details}} ->
+          {:error, Error.invalid_options(msg, details)}
+      end
+    end
+  end
+
+  defp validate_backend_opt(opts) do
+    case Keyword.get(opts, :backend) do
+      val when val in [nil, :system_one, :gemini_decisions] ->
+        :ok
+
+      other ->
+        {:error,
+         Error.invalid_options(
+           "Invalid :backend #{inspect(other)}. Expected :system_one or :gemini_decisions.",
+           %{backend: other}
+         )}
+    end
+  end
+
+  defp sync_client_opts(merged, module_opts, opts) do
+    case Keyword.get(merged, :client) do
+      %SystemOneSDK.Client{
+        provider: GeminiDecisions,
+        provider_client: %GeminiDecisions.Client{} = pclient
+      } = client ->
+        sync_gemini_client_opts(merged, module_opts, opts, client, pclient)
+
+      %SystemOneSDK.Client{} ->
+        Keyword.put(merged, :backend, :system_one)
+
+      _ ->
+        merged
+    end
+  end
+
+  defp sync_gemini_client_opts(
+         merged,
+         module_opts,
+         opts,
+         %SystemOneSDK.Client{} = client,
+         %GeminiDecisions.Client{} = pclient
+       ) do
+    call_opts =
+      opts
+      |> Keyword.put_new(:otp_app, Keyword.get(merged, :otp_app))
+      |> maybe_inherit_module_opt(:decisions_mode, module_opts, pclient, :decisions_mode)
+      |> maybe_inherit_module_opt(:auth_mode, module_opts, pclient, :auth_mode)
+      |> maybe_inherit_module_opt(:decisions_path, module_opts, pclient, :decisions_path)
+      |> maybe_inherit_module_opt(:base_url, module_opts, pclient, :base_url)
+      |> maybe_inherit_module_model(module_opts, client, pclient)
+      |> maybe_inherit_module_api_key(module_opts, client, pclient)
+
+    %GeminiDecisions.Client{} =
+      updated_pclient = GeminiDecisions.apply_call_opts(pclient, call_opts)
+
+    updated_client = %SystemOneSDK.Client{
+      client
+      | provider_client: updated_pclient,
+        default_model: updated_pclient.default_model,
+        api_key: updated_pclient.api_key,
+        base_url: updated_pclient.base_url,
+        context: updated_pclient.context,
+        pristine_client: updated_pclient.pristine_client
+    }
+
+    merged
+    |> Keyword.drop([:gemini_api_key, :api_key, :decisions_path, :base_url])
+    |> Keyword.put(:backend, :gemini_decisions)
+    |> Keyword.put(:decisions_mode, updated_pclient.decisions_mode)
+    |> Keyword.put(:auth_mode, updated_pclient.auth_mode)
+    |> Keyword.put(:model, updated_pclient.default_model)
+    |> maybe_put_kw(:decisions_path, updated_pclient.decisions_path)
+    |> maybe_put_kw(:base_url, updated_pclient.base_url)
+    |> maybe_put_kw(:api_key, updated_pclient.api_key)
+    |> Keyword.put(:client, updated_client)
+  end
+
+  defp maybe_inherit_module_opt(call_opts, opt_key, module_opts, pclient, client_field) do
+    cond do
+      Keyword.get(call_opts, opt_key) != nil ->
+        call_opts
+
+      GeminiDecisions.explicit_field?(pclient, client_field) ->
+        call_opts
+
+      (mod_val = Keyword.get(module_opts, opt_key)) != nil ->
+        Keyword.put(call_opts, opt_key, mod_val)
+
+      true ->
+        call_opts
+    end
+  end
+
+  defp maybe_inherit_module_model(
+         call_opts,
+         module_opts,
+         %SystemOneSDK.Client{} = client,
+         pclient
+       ) do
+    cond do
+      Keyword.get(call_opts, :model) != nil ->
+        call_opts
+
+      GeminiDecisions.explicit_field?(pclient, :default_model) ->
+        maybe_put_kw(call_opts, :model, client.default_model || pclient.default_model)
+
+      (mod_model = Keyword.get(module_opts, :model)) != nil ->
+        Keyword.put(call_opts, :model, mod_model)
+
+      true ->
+        maybe_put_kw(call_opts, :model, client.default_model || pclient.default_model)
+    end
+  end
+
+  defp maybe_inherit_module_api_key(
+         call_opts,
+         module_opts,
+         %SystemOneSDK.Client{} = client,
+         pclient
+       ) do
+    call_has_key? =
+      Enum.any?(
+        [:api_key, :gemini_api_key],
+        &(non_blank_secret(Keyword.get(call_opts, &1)) != nil)
+      ) or
+        explicit_blank_opt?(call_opts, [:api_key, :gemini_api_key])
+
+    client_has_key? =
+      GeminiDecisions.explicit_field?(pclient, :api_key) or
+        non_blank_secret(client.api_key) != nil
+
+    cond do
+      call_has_key? or client_has_key? ->
+        call_opts
+
+      (mod_gemini = Keyword.get(module_opts, :gemini_api_key)) != nil ->
+        Keyword.put(call_opts, :gemini_api_key, mod_gemini)
+
+      (mod_api = Keyword.get(module_opts, :api_key)) != nil ->
+        Keyword.put(call_opts, :api_key, mod_api)
+
+      true ->
+        call_opts
+    end
+  end
+
+  defp maybe_put_kw(opts, _key, nil), do: opts
+  defp maybe_put_kw(opts, key, val), do: Keyword.put(opts, key, val)
 
   defp can_run_or_tier2?(opts) do
     use_tier2? = Keyword.get(opts, :use_tier2_cache, true)
     cache_only? = Keyword.get(opts, :cache_only, false)
 
-    has_client?(opts) or has_api_key?(opts) or cache_only? or
+    has_client?(opts) or has_auth_for_provider?(opts) or cache_only? or
       (use_tier2? and has_tier2_cache?(opts))
   end
+
+  defp can_build_provider_client?(opts) do
+    has_auth_for_provider?(opts) and has_provider_base_url?(opts)
+  end
+
+  defp has_auth_for_provider?(opts) do
+    has_api_key?(opts) or keyless_gemini_decisions?(opts)
+  end
+
+  defp has_provider_base_url?(opts) do
+    case Keyword.get(opts, :backend, :system_one) do
+      :gemini_decisions ->
+        decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
+        base_url = resolve_gemini_base_url(opts, decisions_mode)
+        is_binary(base_url) and String.trim(base_url) != ""
+
+      backend when backend in [:system_one, nil] ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp keyless_gemini_decisions?(opts) do
+    Keyword.get(opts, :backend) == :gemini_decisions and
+      (Keyword.get(opts, :auth_mode) == :none or
+         has_non_empty_headers?(Keyword.get(opts, :extra_headers)) or
+         has_non_empty_headers?(Keyword.get(opts, :headers)))
+  end
+
+  defp has_non_empty_headers?(headers) when is_map(headers), do: map_size(headers) > 0
+  defp has_non_empty_headers?(headers) when is_list(headers), do: headers != []
+  defp has_non_empty_headers?(_), do: false
 
   defp has_client?(opts) do
     match?(%SystemOneSDK.Client{}, Keyword.get(opts, :client))
@@ -293,48 +670,113 @@ defmodule SystemOneDSL.Runner do
 
     case Keyword.get(opts, :client) do
       %SystemOneSDK.Client{} = client when not cache_only? ->
-        client
+        {:ok, client}
 
       _ ->
-        if not cache_only? and has_api_key?(opts) do
+        if not cache_only? and has_auth_for_provider?(opts) do
           build_provider_client(opts)
         else
-          nil
+          {:ok, nil}
         end
     end
   end
 
   defp build_provider_client(opts) do
-    case Keyword.get(opts, :backend, :system_one) do
-      :gemini_decisions ->
-        provider_opts =
-          opts
-          |> Keyword.take(@client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path])
-          |> Keyword.put(:api_key, api_key(opts))
-
-        SystemOneSDK.new_client(
-          provider: SystemOneDSL.Providers.GeminiDecisions,
-          provider_opts: provider_opts
-        )
-
-      _ ->
-        client_opts =
-          opts
-          |> Keyword.take(@client_sdk_options)
-          |> Keyword.put(:api_key, api_key(opts))
-
-        SystemOneSDK.new_client(client_opts)
+    with :ok <- validate_runtime_opts(opts) do
+      case Keyword.get(opts, :backend, :system_one) do
+        :gemini_decisions -> build_gemini_provider_client(opts)
+        backend when backend in [:system_one, nil] -> build_system_one_provider_client(opts)
+      end
     end
   end
 
+  defp build_gemini_provider_client(opts) do
+    decisions_mode = Keyword.get(opts, :decisions_mode) || :unified
+    base_url = resolve_gemini_base_url(opts, decisions_mode)
+
+    if is_binary(base_url) and String.trim(base_url) != "" do
+      provider_opts =
+        opts
+        |> Keyword.take(
+          @client_sdk_options ++ [:decisions_mode, :auth_mode, :decisions_path, :otp_app]
+        )
+        |> Keyword.put(:base_url, base_url)
+        |> Keyword.put(:api_key, api_key(opts))
+
+      {:ok,
+       SystemOneSDK.new_client(
+         provider: GeminiDecisions,
+         provider_opts: provider_opts
+       )}
+    else
+      {:error,
+       %Error{
+         type: :invalid_request,
+         message:
+           "Missing :base_url for :gemini_decisions in #{inspect(decisions_mode)} mode. " <>
+             "Pass :base_url, configure :litellm_base_url/:base_url, or set LITELLM_BASE_URL.",
+         details: %{decisions_mode: decisions_mode}
+       }}
+    end
+  end
+
+  defp build_system_one_provider_client(opts) do
+    client_opts =
+      opts
+      |> Keyword.take(@client_sdk_options)
+      |> Keyword.put(:api_key, api_key(opts))
+
+    {:ok, SystemOneSDK.new_client(client_opts)}
+  end
+
+  defp resolve_gemini_base_url(opts, decisions_mode) do
+    explicit = resolve_secret(Keyword.get(opts, :base_url))
+
+    if is_binary(explicit) and String.trim(explicit) != "" do
+      explicit
+    else
+      otp_app_base_url(Keyword.get(opts, :otp_app), decisions_mode) ||
+        dsl_app_base_url(decisions_mode) ||
+        GeminiDecisions.resolve_base_url(opts, decisions_mode)
+    end
+  end
+
+  defp otp_app_base_url(nil, _mode), do: nil
+
+  defp otp_app_base_url(otp_app, :native) do
+    non_blank_secret(Application.get_env(otp_app, :gemini_decisions_base_url)) ||
+      non_blank_secret(Application.get_env(otp_app, :base_url))
+  end
+
+  defp otp_app_base_url(otp_app, :unified) do
+    non_blank_secret(Application.get_env(otp_app, :litellm_base_url)) ||
+      non_blank_secret(Application.get_env(otp_app, :base_url))
+  end
+
+  defp otp_app_base_url(_otp_app, _mode), do: nil
+
+  defp dsl_app_base_url(:native) do
+    non_blank_secret(Application.get_env(:system_one_dsl, :gemini_decisions_base_url)) ||
+      non_blank_secret(Application.get_env(:system_one_dsl, :base_url))
+  end
+
+  defp dsl_app_base_url(:unified) do
+    non_blank_secret(Application.get_env(:system_one_dsl, :litellm_base_url)) ||
+      non_blank_secret(Application.get_env(:system_one_dsl, :base_url))
+  end
+
+  defp dsl_app_base_url(_), do: nil
+
   defp dispatch_single(contract_mod, contract_key, state, opts) do
     prep = contract_mod.prepared(contract_key)
-    client = build_optional_client(opts)
 
     if Keyword.get(opts, :cache?, true) do
-      evaluate_single_cached(contract_key, client, state, prep, opts)
+      evaluate_single_cached(contract_key, state, prep, opts)
     else
-      evaluate_single_uncached(client, state, prep, opts)
+      case build_optional_client(opts) do
+        {:ok, client} -> evaluate_single_uncached(client, state, prep, opts)
+        {:error, _} = err -> err
+      end
     end
   end
 
@@ -353,7 +795,7 @@ defmodule SystemOneDSL.Runner do
     end
   end
 
-  defp evaluate_single_cached(contract_key, client, state, prep, opts) do
+  defp evaluate_single_cached(contract_key, state, prep, opts) do
     hash_key = Cache.key(state, prep, opts)
     ctx = build_cache_ctx(contract_key, opts)
 
@@ -363,7 +805,7 @@ defmodule SystemOneDSL.Runner do
         l1_result
 
       :miss ->
-        resolve_l1_miss(ctx, hash_key, client, state, prep)
+        resolve_l1_miss(ctx, hash_key, state, prep)
     end
   end
 
@@ -398,43 +840,61 @@ defmodule SystemOneDSL.Runner do
     end
   end
 
-  defp resolve_l1_miss(ctx, hash_key, client, state, prep) do
+  defp resolve_l1_miss(ctx, hash_key, state, prep) do
     case ctx.use_l2? && Cache.adapter_get(ctx.l2, hash_key, ctx.l2_opts) do
       {:ok, l2_result} ->
         Cache.adapter_put(ctx.l1, hash_key, l2_result, ctx.l1_opts)
         l2_result
 
       _ ->
-        evaluate_live_and_persist(ctx, hash_key, client, state, prep)
+        evaluate_live_and_persist(ctx, hash_key, state, prep)
     end
   end
 
-  defp evaluate_live_and_persist(ctx, _hk, nil, _st, _prep), do: missing_client_error(ctx.opts)
+  defp evaluate_live_and_persist(ctx, hash_key, state, prep) do
+    case build_optional_client(ctx.opts) do
+      {:ok, nil} ->
+        missing_client_error(ctx.opts)
 
-  defp evaluate_live_and_persist(ctx, hash_key, client, state, prep) do
-    result = evaluate_single_uncached(client, state, prep, ctx.opts)
-    Cache.adapter_put(ctx.l1, hash_key, result, ctx.l1_opts)
+      {:ok, client} ->
+        result = evaluate_single_uncached(client, state, prep, ctx.opts)
+        Cache.adapter_put(ctx.l1, hash_key, result, ctx.l1_opts)
 
-    if ctx.persist_l2? and Cache.persistable?(result, ctx.opts) do
-      Cache.adapter_put_many(ctx.l2, [{hash_key, ctx.contract_key, state, result}], ctx.l2_opts)
+        if ctx.persist_l2? and Cache.persistable?(result, ctx.opts) do
+          Cache.adapter_put_many(
+            ctx.l2,
+            [{hash_key, ctx.contract_key, state, result}],
+            ctx.l2_opts
+          )
+        end
+
+        result
+
+      {:error, _} = err ->
+        err
     end
-
-    result
   end
 
   defp dispatch_many(contract_mod, contract_key, states, opts) do
     prep = contract_mod.prepared(contract_key)
-    client = build_optional_client(opts)
 
-    cond do
-      Keyword.get(opts, :cache?, true) ->
-        evaluate_many_cached(contract_key, client, states, prep, opts)
+    if Keyword.get(opts, :cache?, true) do
+      evaluate_many_cached(contract_key, states, prep, opts)
+    else
+      dispatch_many_uncached(states, prep, opts)
+    end
+  end
 
-      not is_nil(client) ->
+  defp dispatch_many_uncached(states, prep, opts) do
+    case build_optional_client(opts) do
+      {:ok, client} when not is_nil(client) ->
         SystemOneSDK.evaluate_many(client, states, prep, build_batch_sdk_opts(opts))
 
-      true ->
+      {:ok, nil} ->
         err = missing_client_error(opts)
+        Enum.map(states, fn _ -> err end)
+
+      {:error, _} = err ->
         Enum.map(states, fn _ -> err end)
     end
   end
@@ -456,7 +916,7 @@ defmodule SystemOneDSL.Runner do
     |> Keyword.put(:on_error, :collect)
   end
 
-  defp evaluate_many_cached(contract_key, client, states, prep, opts) do
+  defp evaluate_many_cached(contract_key, states, prep, opts) do
     ctx = build_cache_ctx(contract_key, opts)
 
     indexed_states =
@@ -470,7 +930,7 @@ defmodule SystemOneDSL.Runner do
       Cache.adapter_put_many(ctx.l2, l1_backfills, ctx.l2_opts)
     end
 
-    final_map = resolve_many_misses(misses, cached_map, client, prep, ctx)
+    final_map = resolve_many_misses(misses, cached_map, prep, ctx)
     Enum.map(0..(length(states) - 1), fn idx -> Map.fetch!(final_map, idx) end)
   end
 
@@ -545,17 +1005,28 @@ defmodule SystemOneDSL.Runner do
     end
   end
 
-  defp resolve_many_misses([], cached_map, _client, _prep, _ctx), do: cached_map
+  defp resolve_many_misses([], cached_map, _prep, _ctx), do: cached_map
 
-  defp resolve_many_misses(misses, cached_map, nil, _prep, ctx) do
-    err = missing_client_error(ctx.opts)
+  defp resolve_many_misses(misses, cached_map, prep, ctx) do
+    case build_optional_client(ctx.opts) do
+      {:ok, nil} ->
+        fill_many_error(misses, cached_map, missing_client_error(ctx.opts))
 
+      {:ok, client} ->
+        execute_many_misses(misses, cached_map, client, prep, ctx)
+
+      {:error, _} = err ->
+        fill_many_error(misses, cached_map, err)
+    end
+  end
+
+  defp fill_many_error(misses, cached_map, err) do
     Enum.reduce(misses, cached_map, fn {idx, _st, _hk}, acc ->
       Map.put(acc, idx, err)
     end)
   end
 
-  defp resolve_many_misses(misses, cached_map, client, prep, ctx) do
+  defp execute_many_misses(misses, cached_map, client, prep, ctx) do
     miss_states = Enum.map(misses, fn {_idx, st, _hk} -> st end)
 
     live_results =

@@ -43,7 +43,10 @@ defmodule SystemOneDSL.MixProject do
 
   defp deps do
     [
-      {:system_one_sdk, "~> 0.6.0"},
+      {:system_one_sdk,
+       git: "https://github.com/boxxxie/system_one_sdk.git",
+       branch: "feat/gemini-decisions-provider",
+       sparse: "packages/system_one_sdk"},
       {:jason, "~> 1.4"},
       {:nimble_options, "~> 1.1"},
       {:telemetry, "~> 1.3"},
@@ -86,10 +89,6 @@ defmodule SystemOneDSL.MixProject do
           SystemOneDSL.Cache,
           SystemOneDSL.Cache.ETS,
           SystemOneDSL.Error
-        ],
-        Providers: [
-          SystemOneDSL.Providers.GeminiDecisions,
-          SystemOneDSL.Providers.GeminiDecisions.Protocol
         ],
         Installers: [
           Mix.Tasks.SystemOneDsl.Install
